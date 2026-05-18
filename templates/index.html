@@ -1,0 +1,433 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Pitcher Streamer</title>
+  <style>
+    /* Loading bar — animates while server fetches data, snaps to 100% on DOMContentLoaded */
+    #loading-bar {
+      position: fixed; top: 0; left: 0; height: 3px; width: 0;
+      background: linear-gradient(90deg, #28a745, #4fc3f7);
+      z-index: 9999;
+      animation: loading-grow 8s cubic-bezier(0.1, 0.4, 0.6, 1) forwards;
+    }
+    #loading-bar.done { transition: width 0.15s ease, opacity 0.4s ease 0.15s; opacity: 0; }
+    @keyframes loading-grow {
+      0%   { width: 0%; }
+      30%  { width: 55%; }
+      60%  { width: 75%; }
+      85%  { width: 88%; }
+      100% { width: 95%; }
+    }
+
+    body { font-family: system-ui, sans-serif; font-size: 14px; padding: 1rem 2rem; background: #f5f5f5; color: #222; }
+    h1 { margin-bottom: 0.25rem; }
+    .week-range { color: #666; margin-bottom: 1.5rem; }
+    h2 { margin-top: 2rem; margin-bottom: 0.5rem; }
+    table { border-collapse: collapse; width: 100%; background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,.1); }
+    th { background: #333; color: #fff; text-align: left; padding: 6px 10px; font-size: 13px; }
+    td { padding: 6px 10px; border-bottom: 1px solid #e0e0e0; vertical-align: top; }
+    tr.two-starts { background: #d4edda; }
+    tr.one-start  { background: #fff3cd; }
+    tr.zero-starts { background: #f8f8f8; color: #999; }
+
+    /* Start cells */
+    .starts-list { display: flex; flex-direction: column; gap: 4px; }
+    .start-cell { font-size: 12px; display: flex; align-items: flex-start; gap: 6px; }
+    .start-meta { white-space: nowrap; line-height: 1.8; }
+    .start-score-col { flex-shrink: 0; }
+    .start-summary { display: inline-flex; align-items: center; gap: 4px; cursor: pointer; user-select: none; }
+    .start-summary:hover .score-badge { opacity: 0.75; }
+    .start-summary .score-badge { text-decoration: underline dotted; }
+
+    /* Confidence tier styling — cg9/egg */
+    .start-cell.confirmed .start-summary { font-weight: bold; }
+    .start-cell.projected .start-summary { font-style: italic; }
+    .start-cell.unknown .start-summary { color: #999; }
+    .start-cell.unknown .score-badge { opacity: 0.5; }
+    .tier-confirmed { color: #e65c00; font-size: 13px; }
+    .tier-projected { color: #6f42c1; font-size: 11px; }
+    .tier-unknown   { color: #999; font-size: 11px; }
+    .gameday-link { color: #555; font-size: 11px; text-decoration: none; margin-left: 2px; }
+    .gameday-link:hover { color: #000; }
+
+    /* Score badges */
+    .score-badge { display: inline-block; padding: 1px 6px; border-radius: 3px; font-weight: bold; font-size: 12px; }
+    .score-green  { background: #28a745; color: #fff; }
+    .score-yellow { background: #ffc107; color: #333; }
+    .score-red    { background: #dc3545; color: #fff; }
+
+    /* Flags */
+    .flag-rain   { color: #1565c0; }
+    .flag-repeat { color: #e65100; }
+    .park-dim    { color: #888; font-size: 11px; }
+    .no-starts   { color: #aaa; font-style: italic; font-size: 12px; }
+
+    /* Starts popup panel */
+    .starts-popup { display: none; margin-top: 4px; padding: 6px 10px; background: #f0f0f0;
+                    border-left: 3px solid #aaa; border-radius: 2px; font-size: 12px; line-height: 1.7; }
+    details[open] .starts-popup { display: block; }
+    .starts-popup-row { display: flex; align-items: baseline; gap: 6px; padding: 2px 0; }
+    .starts-popup-badge { flex-shrink: 0; min-width: 18px; text-align: center; }
+    .starts-popup-game { flex: 1; }
+    .starts-popup-reason { color: #666; font-size: 11px; }
+    details.starts-toggle > summary { list-style: none; cursor: pointer; }
+    details.starts-toggle > summary::-webkit-details-marker { display: none; }
+    .starts-count-link { font-weight: bold; text-decoration: underline dotted; cursor: pointer; }
+    .starts-count-link:hover { opacity: 0.75; }
+
+    /* Score breakdown panel — b77 */
+    .breakdown { display: none; margin-top: 4px; padding: 6px 10px; background: #f0f0f0;
+                 border-left: 3px solid #aaa; border-radius: 2px; font-size: 12px; line-height: 1.7; }
+    details[open] .breakdown { display: block; }
+    .breakdown table { background: none; box-shadow: none; font-size: 12px; width: auto; border-collapse: collapse; }
+    .breakdown td { padding: 2px 10px 2px 0; border: none; vertical-align: top; }
+    .breakdown .bd-label { color: #444; font-weight: 600; white-space: nowrap; }
+    .breakdown .bd-delta { font-weight: bold; min-width: 46px; text-align: right; white-space: nowrap; }
+    .breakdown .bd-delta.pos { color: #1a7f37; }
+    .breakdown .bd-delta.neg { color: #cf222e; }
+    .breakdown .bd-delta.zero { color: #888; }
+    .breakdown .bd-explain { color: #666; font-size: 11px; max-width: 260px; }
+    .breakdown .bd-total { border-top: 1px solid #bbb; font-weight: bold; }
+    .breakdown .bd-total td { padding-top: 4px; }
+    details > summary { list-style: none; }
+    details > summary::-webkit-details-marker { display: none; }
+    details.key { margin-bottom: 1.5rem; }
+    details.key > summary { cursor: pointer; color: #555; font-size: 13px; display: inline-block; }
+    details.key > summary:hover { color: #000; }
+    .key-body { margin-top: 0.5rem; padding: 0.75rem 1rem; background: #fff;
+                box-shadow: 0 1px 3px rgba(0,0,0,.1); font-size: 13px; max-width: 700px; }
+    .key-section { margin-bottom: 0.5rem; line-height: 1.6; }
+    .key-section:last-child { margin-bottom: 0; }
+    /* Savant name link */
+    .savant-link { color: #222; text-decoration: none; border-bottom: 1px dotted #999; }
+    .savant-link:hover { color: #c00; border-bottom-color: #c00; }
+    /* K%-BB% coloring */
+    .k-minus-bb { font-variant-numeric: tabular-nums; white-space: nowrap; }
+
+    /* Sortable columns */
+    th[data-col] { cursor: pointer; user-select: none; white-space: nowrap; }
+    th[data-col]:hover { background: #444; }
+    th[data-col]::after { content: ' ⇅'; opacity: 0.4; font-size: 11px; }
+    th[data-col].asc::after { content: ' ↑'; opacity: 1; }
+    th[data-col].desc::after { content: ' ↓'; opacity: 1; }
+  </style>
+</head>
+<body>
+<div id="loading-bar"></div>
+
+<h1>Pitcher Streamer</h1>
+<div class="week-range">
+  <select onchange="location='/?week='+this.value" style="font-size:14px;margin-right:0.75rem;">
+    <option value="0"{{ ' selected' if week_offset == 0 }}>{{ this_week_label }}</option>
+    <option value="1"{{ ' selected' if week_offset == 1 }}>{{ next_week_label }}</option>
+  </select>
+  {{ week_start.strftime("%a %b %-d") }} – {{ week_end.strftime("%a %b %-d, %Y") }}
+  {%- if fetched_at %} &nbsp;·&nbsp; <span title="Data refreshes every 2 hours">Updated {{ fetched_at.strftime("%-I:%M %p") }}</span>{%- endif %}
+</div>
+
+<details class="key">
+  <summary>Key</summary>
+  <div class="key-body">
+    <div class="key-section">
+      <strong>Score</strong> — matchup quality for one start (baseline 50, higher = better).
+      Click any start row to see the full breakdown.
+      <span class="score-badge score-green">≥60</span> great &nbsp;
+      <span class="score-badge score-yellow">45–59</span> ok &nbsp;
+      <span class="score-badge score-red">&lt;45</span> rough
+    </div>
+    <div class="key-section">
+      <strong>Factors:</strong>
+      K% and OPS of the opposing lineup vs this pitcher's handedness ·
+      Park factor (pitcher-friendly parks help) ·
+      ⚠ faced this team ≤9 days ago (familiarity penalty) ·
+      temp &lt;55°F boosts / &gt;82°F hurts ·
+      ⛈ &gt;50% rain chance (game may be cut short)
+    </div>
+    <div class="key-section">
+      <strong>Start confidence:</strong>
+      <span class="tier-confirmed">★</span> MLB confirmed probable &nbsp;
+      <span class="tier-projected">~</span> projected via rotation math &nbsp;
+      <span class="tier-unknown">?</span> no starter announced yet
+    </div>
+    <div class="key-section">
+      <strong>pk</strong> — MLB game ID; click the opponent name to open MLB Gameday for that game.
+    </div>
+  </div>
+</details>
+
+{%- macro starts_cell(p) %}
+{%- if p.starts %}
+<details class="starts-toggle">
+  <summary class="starts-count-link" title="Click to see projected starts">{{ p.start_count }}</summary>
+  <div class="starts-popup">
+    {%- for s in p.starts %}
+    <div class="starts-popup-row">
+      <span class="starts-popup-badge">
+        {%- if s.confidence == 'CONFIRMED' %}<span class="tier-confirmed" title="MLB confirmed">★</span>
+        {%- elif s.confidence == 'PROJECTED' %}<span class="tier-projected" title="Rotation projection">~</span>
+        {%- else %}<span class="tier-unknown" title="Unconfirmed">?</span>
+        {%- endif %}
+      </span>
+      <span class="starts-popup-game">
+        {{ s.date[5:] }} {{ s.home_away }}
+        {%- if s.game_pk %} <a class="gameday-link" href="https://www.mlb.com/gameday/{{ s.game_pk }}" target="_blank">{{ s.opponent }}</a>
+        {%- else %} {{ s.opponent }}{%- endif %}
+      </span>
+      <span class="starts-popup-reason">{{ s.projection_reason }}</span>
+    </div>
+    {%- endfor %}
+  </div>
+</details>
+{%- else %}
+0
+{%- endif %}
+{%- endmacro %}
+
+{%- macro score_badge(score) %}
+{%- if score >= 60 %}<span class="score-badge score-green">{{ score }}</span>
+{%- elif score >= 45 %}<span class="score-badge score-yellow">{{ score }}</span>
+{%- else %}<span class="score-badge score-red">{{ score }}</span>
+{%- endif %}
+{%- endmacro %}
+
+{%- macro delta_cell(val) %}
+{%- if val > 0 %}<td class="bd-delta pos">+{{ val }}</td>
+{%- elif val < 0 %}<td class="bd-delta neg">{{ val }}</td>
+{%- else %}<td class="bd-delta zero">0</td>
+{%- endif %}
+{%- endmacro %}
+
+{%- macro breakdown_panel(bd) %}
+<div class="breakdown">
+  <table>
+    <tr>
+      <td class="bd-label">Baseline</td>
+      <td class="bd-delta">{{ bd.baseline }}</td>
+      <td class="bd-explain">Starting point — league-average matchup</td>
+    </tr>
+    <tr>
+      <td class="bd-label">Park factor&nbsp;{{ bd.park_index|int }}</td>
+      {{ delta_cell(bd.park_delta) }}
+      <td class="bd-explain">39% weight · Run index (100 = neutral, &lt;100 = pitcher-friendly). Source: Baseball Savant</td>
+    </tr>
+    <tr>
+      <td class="bd-label">Season FIP{% if bd.season_fip is not none %}&nbsp;{{ bd.season_fip }}{% else %}&nbsp;n/a{% endif %}</td>
+      {{ delta_cell(bd.season_fip_delta) }}
+      <td class="bd-explain">31% weight · Pitcher's season FIP (lower = better). z={{ bd.season_fip_z }} — normalized vs league avg 4.10, σ=0.60</td>
+    </tr>
+    <tr>
+      <td class="bd-label">
+        {%- if bd.offense_label == 'log5_k' -%}
+          Log5 K%&nbsp;{{ bd.expected_k_pct }}%
+        {%- else -%}
+          Opp OPS&nbsp;.{{ (bd.opponent_ops * 1000)|int }}
+        {%- endif -%}
+      </td>
+      {{ delta_cell(bd.offense_delta) }}
+      <td class="bd-explain">
+        17% weight ·
+        {%- if bd.offense_label == 'log5_k' -%}
+          Log5 E[K%]: opp {{ bd.opponent_k_pct }}% vs {{ bd.pitcher_hand }}HP × pitcher {{ bd.pitcher_k_pct }}% → expected {{ bd.expected_k_pct }}%
+        {%- else -%}
+          Opp OPS vs {{ bd.pitcher_hand }}HP — pitcher K% unavailable, using OPS fallback
+        {%- endif -%}
+      </td>
+    </tr>
+    <tr>
+      <td class="bd-label">Recent FIP{% if bd.recent_fip is not none %}&nbsp;{{ bd.recent_fip }}{% else %}&nbsp;n/a{% endif %}</td>
+      {{ delta_cell(bd.recent_fip_delta) }}
+      <td class="bd-explain">14% weight · FIP over last 20 starts. z={{ bd.recent_fip_z }} — captures hot/cold streaks, σ=0.80</td>
+    </tr>
+    <tr>
+      <td class="bd-label">Familiarity{%- if bd.days_since_faced is not none %}&nbsp;({{ bd.days_since_faced }}d ago){%- endif %}</td>
+      {{ delta_cell(bd.familiarity_delta) }}
+      <td class="bd-explain">
+        {%- if bd.days_since_faced is not none and bd.days_since_faced <= 9 -%}
+          Faced this team {{ bd.days_since_faced }} days ago — lineup has recent tape
+        {%- else -%}
+          No recent familiarity penalty
+        {%- endif -%}
+      </td>
+    </tr>
+    <tr>
+      <td class="bd-label">Temp{%- if bd.temp_f is not none %}&nbsp;{{ bd.temp_f|int }}°F{%- endif %}</td>
+      {{ delta_cell(bd.temp_delta) }}
+      <td class="bd-explain">
+        {%- if bd.temp_f is none -%}No forecast
+        {%- elif bd.temp_f < 55 -%}Cold — less carry on batted balls
+        {%- elif bd.temp_f > 82 -%}Hot — ball carries, more HRs
+        {%- else -%}Neutral
+        {%- endif -%}
+      </td>
+    </tr>
+    <tr>
+      <td class="bd-label">Rain{%- if bd.rain_pct is not none %}&nbsp;{{ bd.rain_pct|int }}%{%- endif %}</td>
+      {{ delta_cell(bd.rain_delta) }}
+      <td class="bd-explain">
+        {%- if bd.rain_pct is none -%}No forecast
+        {%- elif bd.rain_pct > 50 -%}High rain risk — game may be shortened
+        {%- else -%}Low rain risk
+        {%- endif -%}
+      </td>
+    </tr>
+    <tr class="bd-total">
+      <td class="bd-label">Total</td>
+      <td class="bd-delta">{{ bd.total }}</td>
+      <td class="bd-explain" style="color:#444">≥60 strong · 45–59 ok · &lt;45 avoid</td>
+    </tr>
+  </table>
+</div>
+{%- endmacro %}
+
+{%- macro start_row(s) %}
+{%- set tier = s.confidence | default('UNKNOWN') %}
+<div class="start-cell {{ tier | lower }}">
+  <div class="start-score-col">
+    <details>
+      <summary class="start-summary" title="Click to see score breakdown">{{ score_badge(s.score) }}</summary>
+      {{ breakdown_panel(s.breakdown) }}
+    </details>
+  </div>
+  <div class="start-meta">
+    {%- if tier == 'CONFIRMED' %}<span class="tier-confirmed" title="MLB confirmed probable starter">★</span> {%- endif %}
+    {%- if tier == 'PROJECTED' %}<span class="tier-projected" title="Projected via rotation math">~</span> {%- endif %}
+    {%- if tier == 'UNKNOWN' %}<span class="tier-unknown" title="Starter unconfirmed">?</span> {%- endif %}
+    {{ s.date[5:] }} {{ s.home_away }}
+    {%- if s.game_pk %}
+      <a class="gameday-link" href="https://www.mlb.com/gameday/{{ s.game_pk }}" target="_blank" title="MLB Gameday">{{ s.opponent }}</a>
+    {%- else %}
+      {{ s.opponent }}
+    {%- endif %}
+    {%- if s.temp is not none %}&nbsp;{{ s.temp|int }}°F{%- endif %}
+    {%- if s.rain_pct is not none and s.rain_pct > 50 %}<span class="flag-rain" title="Rain {{ s.rain_pct|int }}%">⛈</span>{%- endif %}
+    {%- if s.familiarity_flag %}<span class="flag-repeat" title="Faced {{ s.familiarity_days }}d ago">⚠</span>{%- endif %}
+  </div>
+</div>
+{%- endmacro %}
+
+<!-- ===== My Roster SPs ===== -->
+<h2>My Roster — Starting Pitchers This Week</h2>
+<table id="roster-table">
+  <thead>
+    <tr>
+      <th data-col="0" data-type="str">Name</th>
+      <th data-col="1" data-type="str">Team</th>
+      <th data-col="2" data-type="num">Starts</th>
+      <th data-col="3" data-type="num" title="Strikeout% minus Walk% (season)">K%-BB%</th>
+      <th>Schedule <span style="font-weight:normal;font-size:11px">(click score to expand)</span></th>
+    </tr>
+  </thead>
+  <tbody>
+    {%- for p in roster_pitchers %}
+    <tr class="{{ 'two-starts' if p.start_count >= 2 else 'one-start' if p.start_count == 1 else 'zero-starts' }}">
+      <td>
+        {%- if p.savant_url %}<a href="{{ p.savant_url }}" target="_blank" class="savant-link" title="Baseball Savant">{{ p.name }}</a>
+        {%- else %}{{ p.name }}{%- endif %}
+      </td>
+      <td>{{ p.team_abbr }}</td>
+      <td>{{ starts_cell(p) }}</td>
+      <td class="k-minus-bb">
+        {%- if p.k_minus_bb is not none %}{{ "%+.1f"|format(p.k_minus_bb) }}%
+        {%- else %}<span class="no-starts">—</span>{%- endif %}
+      </td>
+      <td>
+        {%- if p.starts %}
+        <div class="starts-list">
+          {%- for s in p.starts %}{{ start_row(s) }}{%- endfor %}
+        </div>
+        {%- else %}
+        <span class="no-starts">No starts this week</span>
+        {%- endif %}
+      </td>
+    </tr>
+    {%- endfor %}
+    {%- if not roster_pitchers %}
+    <tr><td colspan="5" style="text-align:center;color:#999;">No confirmed starters found on roster.</td></tr>
+    {%- endif %}
+  </tbody>
+</table>
+
+<!-- ===== Waiver Wire SPs ===== -->
+<h2>Waiver Wire — Starting Pitchers This Week</h2>
+<table id="waiver-table">
+  <thead>
+    <tr>
+      <th data-col="0" data-type="str">Name</th>
+      <th data-col="1" data-type="str">Team</th>
+      <th data-col="2" data-type="num">Starts</th>
+      <th data-col="3" data-type="num">Score</th>
+      <th data-col="4" data-type="num" title="Strikeout% minus Walk% (season)">K%-BB%</th>
+      <th data-col="5" data-type="num">Owned%</th>
+      <th>Schedule <span style="font-weight:normal;font-size:11px">(click score to expand)</span></th>
+    </tr>
+  </thead>
+  <tbody>
+    {%- for p in waiver_pitchers %}
+    <tr class="{{ 'two-starts' if p.start_count >= 2 else 'one-start' if p.start_count == 1 else 'zero-starts' }}">
+      <td>
+        {%- if p.savant_url %}<a href="{{ p.savant_url }}" target="_blank" class="savant-link" title="Baseball Savant">{{ p.name }}</a>
+        {%- else %}{{ p.name }}{%- endif %}
+      </td>
+      <td>{{ p.team_abbr }}</td>
+      <td>{{ starts_cell(p) }}</td>
+      <td>{{ p.score_sum }}</td>
+      <td class="k-minus-bb">
+        {%- if p.k_minus_bb is not none %}{{ "%+.1f"|format(p.k_minus_bb) }}%
+        {%- else %}<span class="no-starts">—</span>{%- endif %}
+      </td>
+      <td>{{ p.percent_owned }}%</td>
+      <td>
+        <div class="starts-list">
+          {%- for s in p.starts %}{{ start_row(s) }}{%- endfor %}
+        </div>
+      </td>
+    </tr>
+    {%- endfor %}
+    {%- if not waiver_pitchers %}
+    <tr><td colspan="7" style="text-align:center;color:#999;">No waiver SPs with starts this week found.</td></tr>
+    {%- endif %}
+  </tbody>
+</table>
+
+<script>
+  // Finish loading bar as soon as the DOM is parsed
+  document.addEventListener('DOMContentLoaded', function() {
+    var bar = document.getElementById('loading-bar');
+    if (!bar) return;
+    bar.style.animation = 'none';
+    bar.style.width = '100%';
+    // Force reflow so the transition fires from current width → 100%
+    bar.getBoundingClientRect();
+    bar.classList.add('done');
+    setTimeout(function() { bar.remove(); }, 600);
+  });
+
+  document.querySelectorAll('th[data-col]').forEach(th => {
+    th.addEventListener('click', () => {
+      const table = th.closest('table');
+      const tbody = table.querySelector('tbody');
+      const col = +th.dataset.col;
+      const isNum = th.dataset.type === 'num';
+      const asc = !th.classList.contains('asc');
+
+      // Clear sort indicators on all ths in this table
+      table.querySelectorAll('th[data-col]').forEach(h => h.classList.remove('asc', 'desc'));
+      th.classList.add(asc ? 'asc' : 'desc');
+
+      const rows = Array.from(tbody.children).filter(el => el.tagName === 'TR');
+      rows.sort((a, b) => {
+        const av = a.cells[col]?.textContent.trim() ?? '';
+        const bv = b.cells[col]?.textContent.trim() ?? '';
+        const cmp = isNum
+          ? (parseFloat(av) || 0) - (parseFloat(bv) || 0)
+          : av.localeCompare(bv);
+        return asc ? cmp : -cmp;
+      });
+      rows.forEach(r => tbody.appendChild(r));
+    });
+  });
+</script>
+</body>
+</html>

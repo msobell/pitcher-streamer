@@ -1,0 +1,8 @@
+# Copy this file to config.yaml and fill in your values.
+# config.yaml is gitignored — never commit real league data.
+
+league:
+  id: YOUR_LEAGUE_ID           # Yahoo league ID (integer)
+  name: "Your League Name"
+  my_team_name: "Your Team Name"
+  season: 2026
