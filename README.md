@@ -88,10 +88,10 @@ Applied as flat modifiers after the weighted score (not part of the regression):
 - 12 if faced this team ≤ 5 days ago
 + 5  if temperature < 55°F             (cold air = less carry on batted balls)
 - 5  if temperature > 82°F             (ball carries further, more HRs)
-- 15 if rain probability > 50%         (game may be shortened or cancelled)
+- 15 if rain probability > 50%         (start cut short mid-game)
 ```
 
-Weather is sourced from Open-Meteo forecasts for the venue coordinates at game time.
+Weather is sourced from Open-Meteo hourly forecasts for the venue coordinates. Temperature uses the first-pitch hour. Rain probability is the **maximum across hours 1–2 after first pitch** (skipping first pitch itself, which would cause a postponement rather than a shortened start, and skipping hour 3+ when the starter is typically out of the game anyway).
 
 ### Start confidence
 

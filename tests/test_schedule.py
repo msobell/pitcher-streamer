@@ -254,7 +254,7 @@ def test_fetch_weather_forecast_parses_matching_hour(monkeypatch):
     assert result is not None
     assert result["temp_f"] == pytest.approx(68.0)
     assert result["humidity_pct"] == 55
-    assert result["rain_pct"] == 10
+    assert result["rain_pct"] == 15  # max over hours 1–2 post-first-pitch (T19 only in this fixture)
 
 
 # --- resolve_player_mlbam_id ---

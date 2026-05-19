@@ -21,7 +21,7 @@ import re
 
 import yaml
 from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 
 from connectors import MlbStatsConnector, YahooConnector
@@ -231,27 +231,31 @@ def _score_pitcher_starts(
         else:
             confidence = "UNKNOWN"
 
-        # Weather: cached per (venue_lat, venue_lng, game_date) — i06
+        # Weather: always fetch Open-Meteo for rain_pct regardless of whether MLB
+        # provided a temperature. MLB gives current conditions at game time but no
+        # precipitation probability; Open-Meteo provides the full forecast.
+        # Use MLB temp when available (more accurate for games already in progress),
+        # fall back to Open-Meteo temp otherwise.
         weather_temp = start.get("weather_temp")
         temp_f = weather_temp
         rain_pct = None
 
-        if temp_f is None:
-            venue_lat = start.get("venue_lat")
-            venue_lng = start.get("venue_lng")
-            game_datetime_str = start.get("game_datetime")
-            if venue_lat and venue_lng and game_datetime_str:
-                weather_key = (round(venue_lat, 3), round(venue_lng, 3), game_date)
-                if weather_key not in weather_cache:
-                    try:
-                        gdt = datetime.fromisoformat(game_datetime_str.replace("Z", "+00:00"))
-                        weather_cache[weather_key] = mlb.fetch_weather_forecast(venue_lat, venue_lng, gdt)
-                    except Exception:
-                        weather_cache[weather_key] = None
-                forecast = weather_cache.get(weather_key)
-                if forecast:
+        venue_lat = start.get("venue_lat")
+        venue_lng = start.get("venue_lng")
+        game_datetime_str = start.get("game_datetime")
+        if venue_lat and venue_lng and game_datetime_str:
+            weather_key = (round(venue_lat, 3), round(venue_lng, 3), game_date)
+            if weather_key not in weather_cache:
+                try:
+                    gdt = datetime.fromisoformat(game_datetime_str.replace("Z", "+00:00"))
+                    weather_cache[weather_key] = mlb.fetch_weather_forecast(venue_lat, venue_lng, gdt)
+                except Exception:
+                    weather_cache[weather_key] = None
+            forecast = weather_cache.get(weather_key)
+            if forecast:
+                if temp_f is None:
                     temp_f = forecast.get("temp_f")
-                    rain_pct = forecast.get("rain_pct")
+                rain_pct = forecast.get("rain_pct")
 
         # Batting splits — cached per (team_id, handedness) — i06
         handedness = pitcher.get("throws", "R")
@@ -571,7 +575,7 @@ def _build_pitcher_data(park_factors: dict, week_offset: int = 0) -> dict:
             opp_id = s.get("opponent_id")
             if opp_id:
                 opponent_handedness_pairs.add((opp_id, handedness))
-            if s.get("weather_temp") is None and s.get("venue_lat") and s.get("venue_lng") and s.get("game_datetime"):
+            if s.get("venue_lat") and s.get("venue_lng") and s.get("game_datetime"):
                 weather_keys.add((round(s["venue_lat"], 3), round(s["venue_lng"], 3), s["date"], s["game_datetime"]))
 
     n_phase4 = len(opponent_handedness_pairs) + len(weather_keys)
@@ -758,24 +762,29 @@ def _render_index(request: Request, data: dict, week_offset: int) -> str:
     )
 
 
-# Minimal HTML shell flushed immediately on cold starts so the browser can
-# render the loading bar animation while the server fetches data.
-_LOADING_SHELL = """\
+def _loading_shell(week_offset: int) -> str:
+    """
+    Minimal page returned immediately on cold starts. The browser polls /?week=N
+    every 3 seconds; once the cache is populated the redirect renders the full page.
+    The progress bar animates slowly — designed for a 15–30s fetch — and stops
+    just under 90% so it never falsely signals completion.
+    """
+    return f"""\
 <!DOCTYPE html><html lang="en"><head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Pitcher Streamer</title>
+<title>Pitcher Streamer — Loading…</title>
 <style>
-#loading-bar{position:fixed;top:0;left:0;height:3px;width:0;
+#loading-bar{{position:fixed;top:0;left:0;height:3px;width:0;
 background:linear-gradient(90deg,#28a745,#4fc3f7);z-index:9999;
-animation:loading-grow 8s cubic-bezier(0.1,0.4,0.6,1) forwards}
-#loading-bar.done{transition:width .15s ease,opacity .4s ease .15s;opacity:0}
-@keyframes loading-grow{0%{width:0}30%{width:55%}60%{width:75%}85%{width:88%}100%{width:95%}}
-body{font-family:system-ui,sans-serif;font-size:14px;padding:1rem 2rem;background:#f5f5f5;color:#222}
+animation:loading-grow 60s cubic-bezier(0.05,0.3,0.3,1) forwards}}
+@keyframes loading-grow{{0%{{width:0}}20%{{width:25%}}50%{{width:50%}}80%{{width:72%}}100%{{width:88%}}}}
+body{{font-family:system-ui,sans-serif;font-size:14px;padding:1rem 2rem;background:#f5f5f5;color:#222}}
 </style></head><body>
 <div id="loading-bar"></div>
 <p style="color:#666;margin-top:2rem">Loading pitcher data…</p>
-"""
+<script>setTimeout(function(){{window.location='/?week={week_offset}';}},3000);</script>
+</body></html>"""
 
 
 @app.get("/")
@@ -792,21 +801,16 @@ async def index(request: Request, week: int = 0):
         # Cache hit — render immediately, no streaming needed
         return HTMLResponse(_render_index(request, data, week_offset))
 
-    # Cold start — stream the loading shell first, then fetch + render
-    logger.info("Cold start: fetching week_offset=%d (streaming)", week_offset)
+    # Cold start — return the loading shell immediately, populate the cache in
+    # the background, then redirect. The redirect hits a cache hit and renders instantly.
+    logger.info("Cold start: fetching week_offset=%d (async)", week_offset)
 
-    async def _stream():
-        yield _LOADING_SHELL
-        # Fetch in a thread so the event loop stays unblocked
+    async def _fetch_and_cache():
         loop = asyncio.get_event_loop()
-        data = await loop.run_in_executor(
+        result = await loop.run_in_executor(
             None, _build_pitcher_data, app_state.park_factors, week_offset
         )
-        app_state.pitcher_cache[week_offset] = data
-        # Replace the shell with the full rendered page via a JS redirect trick:
-        # close the partial body and emit a script that replaces the document.
-        full_html = _render_index(request, data, week_offset)
-        escaped = full_html.replace("\\", "\\\\").replace("`", "\\`").replace("$", "\\$")
-        yield f"<script>document.open();document.write(`{escaped}`);document.close();</script>"
+        app_state.pitcher_cache[week_offset] = result
 
-    return StreamingResponse(_stream(), media_type="text/html")
+    asyncio.create_task(_fetch_and_cache())
+    return HTMLResponse(_loading_shell(week_offset))

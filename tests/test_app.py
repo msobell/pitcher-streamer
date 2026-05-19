@@ -234,6 +234,12 @@ def _make_client(tmp_path, mock_yahoo, mock_mlb):
          patch("main._make_yahoo_connector", return_value=mock_yahoo), \
          patch("main.MlbStatsConnector", return_value=mock_mlb):
         with TestClient(main_module.app) as c:
+            # Pre-populate cache for both week offsets so tests always get the
+            # full rendered page rather than the loading shell.
+            for offset in (0, 1):
+                if offset not in c.app.state.pitcher_cache:
+                    data = main_module._build_pitcher_data(c.app.state.park_factors, offset)
+                    c.app.state.pitcher_cache[offset] = data
             yield c
 
 

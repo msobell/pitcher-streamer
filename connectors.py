@@ -395,6 +395,11 @@ class MlbStatsConnector:
         """
         Fetch weather forecast from Open-Meteo for a future game.
         Returns {temp_f, humidity_pct, rain_pct} or None on failure.
+
+        Open-Meteo returns hourly times in the venue's local timezone (timezone=auto).
+        We convert game_datetime from UTC to local time using utc_offset_seconds from
+        the response before matching, so a 6:40 PM CDT game (23:40 UTC) correctly
+        matches the T18:00 local slot rather than the T23:00 UTC slot.
         """
         target_hour = game_datetime.replace(minute=0, second=0, microsecond=0)
         key = ("weather", round(lat, 3), round(lng, 3), target_hour.isoformat())
@@ -418,9 +423,15 @@ class MlbStatsConnector:
             )
             resp.raise_for_status()
             data = resp.json()
+
+            # Convert game time from UTC to venue local time using the offset
+            # Open-Meteo returns in its response (e.g. -18000 for CDT).
+            utc_offset = data.get("utc_offset_seconds", 0)
+            local_hour = target_hour + timedelta(seconds=utc_offset)
+            target_str = local_hour.strftime("%Y-%m-%dT%H:%M")
+
             hourly = data.get("hourly", {})
             times = hourly.get("time", [])
-            target_str = target_hour.strftime("%Y-%m-%dT%H:%M")
             idx = None
             for i, t in enumerate(times):
                 if t.startswith(target_str):
@@ -432,10 +443,14 @@ class MlbStatsConnector:
             temps = hourly.get("temperature_2m", [])
             humidity = hourly.get("relativehumidity_2m", [])
             rain = hourly.get("precipitation_probability", [])
+            # Rain at first pitch → postponed (not a pitcher stat risk).
+            # Rain in innings 7–9 → starter is out anyway.
+            # The dangerous window is roughly innings 2–6: hours 1–2 after first pitch.
+            rain_window = [rain[i] for i in range(idx + 1, min(idx + 3, len(rain)))]
             result = {
                 "temp_f": temps[idx] if idx < len(temps) else None,
                 "humidity_pct": humidity[idx] if idx < len(humidity) else None,
-                "rain_pct": rain[idx] if idx < len(rain) else None,
+                "rain_pct": max(rain_window) if rain_window else None,
             }
             _cache.set(key, result, _TTL_WEATHER)
             return result
@@ -580,29 +595,44 @@ class YahooConnector:
     @staticmethod
     def _heal_oauth_json(path: Path) -> None:
         """
-        yahoo_oauth appends a stray '}' on token refresh, producing invalid JSON.
-        Strip trailing garbage and rewrite the file if needed.
+        yahoo_oauth corrupts oauth2.json in two known ways:
+          1. Appends a stray '}' after the closing brace (trailing-garbage corruption).
+          2. Truncates the file to zero bytes during a write (empty-file corruption).
+        In both cases, attempt to recover; delete the file if unrecoverable so the
+        next foreground request triggers a fresh OAuth flow instead of looping on errors.
         """
         try:
             raw = path.read_text()
             json.loads(raw)  # fast path — already valid
+            return
         except json.JSONDecodeError:
-            try:
-                # Walk back from the end until we find a valid JSON object
-                for end in range(len(raw), 0, -1):
-                    candidate = raw[:end].rstrip()
-                    if not candidate.endswith("}"):
-                        continue
-                    try:
-                        data = json.loads(candidate)
-                        path.write_text(json.dumps(data, indent=4, sort_keys=True))
-                        logger.info("Healed malformed oauth2.json (trimmed %d chars)", len(raw) - end)
-                        return
-                    except json.JSONDecodeError:
-                        continue
-                logger.error("Could not heal oauth2.json — file may be unrecoverable")
-            except Exception:
-                logger.exception("Failed to heal oauth2.json")
+            pass
+        except Exception:
+            logger.exception("Failed to read oauth2.json")
+            return
+
+        if not raw.strip():
+            logger.error("oauth2.json is empty — deleting so OAuth re-authorizes on next request")
+            path.unlink(missing_ok=True)
+            return
+
+        try:
+            # Walk back from the end until we find a valid JSON object
+            for end in range(len(raw), 0, -1):
+                candidate = raw[:end].rstrip()
+                if not candidate.endswith("}"):
+                    continue
+                try:
+                    data = json.loads(candidate)
+                    path.write_text(json.dumps(data, indent=4, sort_keys=True))
+                    logger.info("Healed malformed oauth2.json (trimmed %d chars)", len(raw) - end)
+                    return
+                except json.JSONDecodeError:
+                    continue
+            logger.error("Could not heal oauth2.json — deleting so OAuth re-authorizes on next request")
+            path.unlink(missing_ok=True)
+        except Exception:
+            logger.exception("Failed to heal oauth2.json")
 
     def _inject_consumer_creds(self, path: Path) -> None:
         try:
