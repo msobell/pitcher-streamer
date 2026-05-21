@@ -267,12 +267,20 @@ def _score_pitcher_starts(
         opponent_ops = splits.get("ops", 0.720)
         opponent_k_pct = splits.get("k_pct") or 22.0
 
-        # Familiarity
+        # Familiarity — measured relative to this start's own date, not today,
+        # so that scores for past starts aren't retroactively penalised as the
+        # pitcher accumulates more recent matchups against the same opponent.
+        # Also exclude the game itself (d == 0) so the start being scored doesn't
+        # count as prior familiarity with itself.
+        try:
+            start_date = date.fromisoformat(game_date)
+        except (ValueError, TypeError):
+            start_date = today
         days_since_faced = None
         for rs in recent_starts:
             if opponent_name and opponent_name.lower() in rs.get("opponent_name", "").lower():
-                d = _days_since(rs["date"], today)
-                if d <= 9:
+                d = _days_since(rs["date"], start_date)
+                if 1 <= d <= 9:
                     days_since_faced = d
                     break
 
@@ -578,33 +586,30 @@ def _build_pitcher_data(park_factors: dict, week_offset: int = 0) -> dict:
             if s.get("venue_lat") and s.get("venue_lng") and s.get("game_datetime"):
                 weather_keys.add((round(s["venue_lat"], 3), round(s["venue_lng"], 3), s["date"], s["game_datetime"]))
 
-    n_phase4 = len(opponent_handedness_pairs) + len(weather_keys)
-    with ThreadPoolExecutor(max_workers=min(max(n_phase4, 1), 20)) as ex:
+    # Batting splits — parallel, MLB API has no concurrency limit
+    with ThreadPoolExecutor(max_workers=min(max(len(opponent_handedness_pairs), 1), 20)) as ex:
         splits_futs = {
             ex.submit(mlb.fetch_team_batting_splits, opp_id, hand): (opp_id, hand)
             for opp_id, hand in opponent_handedness_pairs
         }
-        weather_futs = {}
-        for lat, lng, game_date, game_datetime_str in weather_keys:
+        for fut in as_completed(splits_futs):
+            key = splits_futs[fut]
             try:
-                gdt = datetime.fromisoformat(game_datetime_str.replace("Z", "+00:00"))
-                weather_futs[ex.submit(mlb.fetch_weather_forecast, lat, lng, gdt)] = (lat, lng, game_date)
+                splits_cache[key] = fut.result()
             except Exception:
-                pass
+                splits_cache[key] = {}
 
-        for fut in as_completed(list(splits_futs) + list(weather_futs)):
-            if fut in splits_futs:
-                key = splits_futs[fut]
-                try:
-                    splits_cache[key] = fut.result()
-                except Exception:
-                    splits_cache[key] = {}
-            else:
-                key = weather_futs[fut]
-                try:
-                    weather_cache[key] = fut.result()
-                except Exception:
-                    weather_cache[key] = None
+    # Weather — sequential to avoid Open-Meteo rate limiting (429s).
+    # ~15 venues × ~200ms each ≈ 3s, negligible vs the rest of the pipeline.
+    for lat, lng, game_date, game_datetime_str in weather_keys:
+        cache_key = (lat, lng, game_date)
+        if cache_key in weather_cache:
+            continue
+        try:
+            gdt = datetime.fromisoformat(game_datetime_str.replace("Z", "+00:00"))
+            weather_cache[cache_key] = mlb.fetch_weather_forecast(lat, lng, gdt)
+        except Exception:
+            weather_cache[cache_key] = None
 
     # Phase 5: project unconfirmed starters via rotation math — 2t1/aai
     # Build a rotation per team from the candidates who passed the starter gate,
