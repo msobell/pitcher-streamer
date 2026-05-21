@@ -1,7 +1,0 @@
-{
-  "database": "dolt",
-  "backend": "dolt",
-  "dolt_mode": "embedded",
-  "dolt_database": "pitcher_streamer",
-  "project_id": "bbc68818-55f8-4bf3-b733-3f59d17f5454"
-}
