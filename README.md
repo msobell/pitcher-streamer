@@ -157,7 +157,11 @@ This writes `park_factors.json`. Re-run at the start of each season. The app wil
 
 ### 6. OAuth (first run only)
 
-The app will open a browser for Yahoo OAuth authorization. After authorizing, Yahoo redirects to `https://localhost` — that URL won't load, which is expected. Copy the `code=` value from the URL and paste it when prompted. The token is saved to `oauth2.json` and refreshed automatically.
+```bash
+cp oauth2.json.example oauth2.json
+```
+
+Fill in `consumer_key` and `consumer_secret` from your Yahoo app credentials, then run the app. It will open a browser for Yahoo OAuth authorization. After authorizing, Yahoo redirects to `https://localhost` — that URL won't load, which is expected. Copy the `code=` value from the URL and paste it when prompted. The token is saved to `oauth2.json` and refreshed automatically.
 
 ### 7. Run
 
@@ -178,10 +182,11 @@ Data is fetched fresh on first load, then refreshed in the background every 2 ho
 | `scoring.py` | `compute_matchup_score()` — Stream-o-Nator weights + Log5 K% + z-score normalization |
 | `rotation.py` | Team rotation builder and projection engine |
 | `refresh_park_factors.py` | One-shot script to fetch Baseball Savant park factors |
-| `config.yaml` | Your league config (gitignored) |
+| `config.yaml` | Your league config |
 | `config.yaml.example` | Template to copy from |
-| `park_factors.json` | Cached park factors (gitignored, written by refresh script) |
-| `oauth2.json` | Yahoo OAuth token (gitignored) |
+| `park_factors.json` | Cached park factors (written by refresh script) |
+| `oauth2.json` | Yahoo OAuth token (written on first run) |
+| `oauth2.json.example` | Template showing the expected token file structure |
 
 ## Tests
 

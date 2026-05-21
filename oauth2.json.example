@@ -1,0 +1,8 @@
+{
+    "access_token": "",
+    "consumer_key": "your_consumer_key",
+    "consumer_secret": "your_consumer_secret",
+    "refresh_token": "",
+    "token_time": 0,
+    "token_type": "bearer"
+}
