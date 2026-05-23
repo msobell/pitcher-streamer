@@ -2,7 +2,45 @@
 Yahoo Fantasy and MLB Stats API connectors for pitcher-streamer.
 
 YahooConnector: OAuth + roster + free agents (copied from sportsball-bot).
-MlbStatsConnector: schedule, team IDs, batting splits, game logs, weather.
+MlbStatsConnector: schedule, team IDs, batting splits, game logs, weather,
+                   Baseball Savant game data, FanGraphs team wOBA.
+
+# FanGraphs API notes (discovered 2026-05-22)
+#
+# Endpoint: GET https://www.fangraphs.com/api/leaders/major-league/data
+#
+# Required headers:
+#   User-Agent: <any browser UA>
+#   Referer: https://www.fangraphs.com/leaders/major-league
+# (Cloudflare blocks plain curl without browser-like headers.)
+#
+# Key parameters for team-level batting stats:
+#   team=0,ts       "0,ts" = all teams in team-stats mode (not player-level)
+#   type=8          Standard batting stat set (includes wOBA, wRC+, K%, BB%, etc.)
+#   stats=bat       Batting group
+#   qual=0          No PA qualifier — required to get all 30 teams
+#   sortstat=wOBA   Any valid stat column name; required or the response is empty
+#   sortdir=default asc|desc|default
+#   season / season1  Both must be set to the same year for a single season
+#   month=0         Full season (non-zero for monthly splits)
+#   pageitems=30    One page of 30 teams
+#
+# Response: JSON with top-level keys: data, totalCount, dateRange, sortStat, sortDir, status
+#   data[n].TeamNameAbb  — team abbreviation (FanGraphs convention, see _FG_TO_MLB_ABB)
+#   data[n].wOBA         — float, e.g. 0.3438
+#   data[n].Team         — HTML anchor tag, not usable directly
+#
+# Abbreviation differences vs MLB Stats API (7 teams):
+#   FanGraphs → MLB:  ARI→AZ  CHW→CWS  KCR→KC  SDP→SD  SFG→SF  TBR→TB  WSN→WSH
+#
+# wOBA is NOT available from the MLB Stats API (checked /teams/{id}/stats with
+# statSplits and season groups — only OPS/OBP/SLG are returned). FanGraphs is
+# the only clean source for team wOBA without scraping.
+#
+# Note: FanGraphs wOBA is overall (all PA, all handedness). The MLB Stats API
+# does return handedness splits (vl/vr sitCodes) but only OPS, not wOBA.
+# We show overall wOBA as the primary signal and fall back to handedness-split
+# OPS from MLB Stats API when FanGraphs is unavailable.
 """
 
 from __future__ import annotations
@@ -16,6 +54,17 @@ from pathlib import Path
 from typing import Optional, Protocol
 
 logger = logging.getLogger(__name__)
+
+# FanGraphs uses different abbreviations for 7 teams vs MLB Stats API.
+_FG_TO_MLB_ABB: dict[str, str] = {
+    "ARI": "AZ",
+    "CHW": "CWS",
+    "KCR": "KC",
+    "SDP": "SD",
+    "SFG": "SF",
+    "TBR": "TB",
+    "WSN": "WSH",
+}
 
 
 # ---------------------------------------------------------------------------
@@ -314,6 +363,8 @@ class MlbStatsConnector:
                         "hr": int(stat.get("homeRuns", 0)),
                         "bf": int(stat.get("battersFaced", 0)),
                         "k_per_9": _to_float(stat.get("strikeoutsPer9Inn")) or 0.0,
+                        "era": stat.get("era"),
+                        "whip": _to_float(stat.get("whip")),
                     }
                     _cache.set(key, result, _TTL_SEASON_STAT)
                     return result
@@ -388,6 +439,202 @@ class MlbStatsConnector:
         except Exception:
             logger.warning("MLB player ID lookup failed for %r", full_name)
             return None
+
+    def fetch_game_boxscore(self, game_pk: int, pitcher_mlbam_id: int) -> "dict | None":
+        """
+        Fetch the pitching line for a specific pitcher from a completed game's boxscore.
+        Returns {ip, er, h, bb, k, hr, pitches, decision} or None on failure.
+        """
+        key = ("boxscore", game_pk, pitcher_mlbam_id)
+        hit = _cache.get(key)
+        if hit is not _MISS:
+            return hit
+        try:
+            resp = self._http.get(
+                f"{_BASE_URL}/game/{game_pk}/boxscore",
+                params={},
+            )
+            resp.raise_for_status()
+            box = resp.json()
+            for side in ("home", "away"):
+                team = box.get("teams", {}).get(side, {})
+                if pitcher_mlbam_id not in team.get("pitchers", []):
+                    continue
+                player = team.get("players", {}).get(f"ID{pitcher_mlbam_id}", {})
+                ps = player.get("stats", {}).get("pitching", {})
+                if not ps:
+                    break
+                note = ps.get("note", "")
+                decision = None
+                if "(W" in note:
+                    decision = "W"
+                elif "(L" in note:
+                    decision = "L"
+                elif "(ND" in note or "(H" in note or "(S" in note:
+                    decision = note.strip("() ").split(",")[0]
+                result = {
+                    "ip": ps.get("inningsPitched", ""),
+                    "er": ps.get("earnedRuns", 0),
+                    "h": ps.get("hits", 0),
+                    "bb": ps.get("baseOnBalls", 0),
+                    "k": ps.get("strikeOuts", 0),
+                    "hr": ps.get("homeRuns", 0),
+                    "pitches": ps.get("pitchesThrown", ps.get("numberOfPitches", 0)),
+                    "decision": decision,
+                }
+                _cache.set(key, result, _TTL_GAME_LOG)
+                return result
+        except Exception:
+            logger.warning("Failed to fetch boxscore for game %s pitcher %s", game_pk, pitcher_mlbam_id)
+        return None
+
+    def fetch_game_savant(self, game_pk: int, pitcher_mlbam_id: int) -> "dict | None":
+        """
+        Fetch pitch-level Statcast data from Baseball Savant for one pitcher in one game.
+        Computes: whiff%, chase%, hard_hit%, avg_ev, barrel_count, avg_fb_velo.
+        Returns a dict of those stats or None on failure.
+        """
+        key = ("savant_game", game_pk, pitcher_mlbam_id)
+        hit = _cache.get(key)
+        if hit is not _MISS:
+            return hit
+        try:
+            import httpx as _httpx
+            resp = _httpx.get(
+                "https://baseballsavant.mlb.com/gf",
+                params={"game_pk": game_pk},
+                headers={"User-Agent": "Mozilla/5.0"},
+                timeout=15,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+
+            pitches = None
+            for side in ("home_pitchers", "away_pitchers"):
+                pitches = data.get(side, {}).get(str(pitcher_mlbam_id))
+                if pitches:
+                    break
+            if not pitches:
+                _cache.set(key, None, _TTL_GAME_LOG)
+                return None
+
+            swing_descs = {
+                "Swinging Strike", "Swinging Strike (Blocked)", "Foul", "Foul Tip",
+                "Foul Bunt", "Missed Bunt", "In play, out(s)", "In play, no out",
+                "In play, run(s)",
+            }
+            whiff_descs = {"Swinging Strike", "Swinging Strike (Blocked)", "Missed Bunt"}
+            called_strike_descs = {"Called Strike"}
+            in_zone_contact_descs = {
+                "In play, out(s)", "In play, no out", "In play, run(s)", "Foul", "Foul Tip", "Foul Bunt",
+            }
+
+            swings = [p for p in pitches if p.get("description", "") in swing_descs]
+            whiffs = [p for p in pitches if p.get("description", "") in whiff_descs]
+            called_strikes = [p for p in pitches if p.get("description", "") in called_strike_descs]
+            outside = [p for p in pitches if not (p.get("isInZone") or p.get("savantIsInZone"))]
+            chases = [p for p in outside if p.get("description", "") in swing_descs]
+            in_zone = [p for p in pitches if p.get("isInZone") or p.get("savantIsInZone")]
+            in_zone_swings = [p for p in in_zone if p.get("description", "") in swing_descs]
+            in_zone_contacts = [p for p in in_zone if p.get("description", "") in in_zone_contact_descs]
+
+            # First-pitch strikes: pitches where pitcher_pa_number == 1 and it was a strike
+            first_pitches = [p for p in pitches if p.get("pitcher_pa_number") == 1]
+            first_pitch_strikes = [
+                p for p in first_pitches
+                if p.get("description", "") in swing_descs | called_strike_descs | {"Foul"}
+            ]
+
+            swords = sum(1 for p in pitches if p.get("isSword"))
+
+            evs = []
+            for p in pitches:
+                v = p.get("hit_speed")
+                if v and str(v) != "":
+                    try:
+                        evs.append(float(v))
+                    except (ValueError, TypeError):
+                        pass
+
+            hard_hits = sum(1 for v in evs if v >= 95)
+            barrels = sum(1 for p in pitches if p.get("is_barrel"))
+
+            fb_types = {"FF", "SI", "FC"}
+            fb_velos = []
+            for p in pitches:
+                if p.get("pitch_type") in fb_types:
+                    v = p.get("start_speed")
+                    if v:
+                        try:
+                            fb_velos.append(float(v))
+                        except (ValueError, TypeError):
+                            pass
+
+            whiff_pct = round(len(whiffs) / len(swings) * 100) if swings else None
+            chase_pct = round(len(chases) / len(outside) * 100) if outside else None
+
+            result = {
+                "whiff_pct": whiff_pct,
+                "chase_pct": chase_pct,
+                "csw_pct": round((len(whiffs) + len(called_strikes)) / len(pitches) * 100) if pitches else None,
+                "f_strike_pct": round(len(first_pitch_strikes) / len(first_pitches) * 100) if first_pitches else None,
+                "zone_contact_pct": round(len(in_zone_contacts) / len(in_zone_swings) * 100) if in_zone_swings else None,
+                "hard_hit_pct": round(hard_hits / len(evs) * 100) if evs else None,
+                "avg_ev": round(sum(evs) / len(evs), 1) if evs else None,
+                "barrels": barrels,
+                "hard_hits": hard_hits,
+                "swords": swords,
+                "avg_fb_velo": round(sum(fb_velos) / len(fb_velos), 1) if fb_velos else None,
+                # Raw counts needed for game score computation in main.py
+                "_whiff_pct_raw": len(whiffs) / len(swings) if swings else None,
+                "_chase_pct_raw": len(chases) / len(outside) if outside else None,
+            }
+            _cache.set(key, result, _TTL_GAME_LOG)
+            return result
+        except Exception:
+            logger.warning("Failed to fetch Savant game data for game %s pitcher %s", game_pk, pitcher_mlbam_id)
+        return None
+
+    def fetch_fangraphs_team_woba(self, season: int) -> "dict[str, float]":
+        """
+        Fetch team-level wOBA from FanGraphs for the given season.
+        Returns {mlb_team_abbreviation: woba_float} for all 30 teams.
+        Cached for 6 hours — team wOBA changes slowly.
+        """
+        key = ("fg_team_woba", season)
+        hit = _cache.get(key)
+        if hit is not _MISS:
+            return hit
+        try:
+            import httpx as _httpx
+            resp = _httpx.get(
+                "https://www.fangraphs.com/api/leaders/major-league/data",
+                params={
+                    "pos": "all", "stats": "bat", "lg": "all", "qual": "0",
+                    "type": "8", "season": str(season), "season1": str(season),
+                    "month": "0", "team": "0,ts", "pageitems": "30",
+                    "pagenum": "1", "ind": "0", "sortstat": "wOBA", "sortdir": "default",
+                },
+                headers={
+                    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
+                    "Referer": "https://www.fangraphs.com/leaders/major-league",
+                },
+                timeout=15,
+            )
+            resp.raise_for_status()
+            result: dict[str, float] = {}
+            for team in resp.json().get("data", []):
+                fg_abb = team.get("TeamNameAbb", "")
+                woba = team.get("wOBA")
+                if fg_abb and woba is not None:
+                    mlb_abb = _FG_TO_MLB_ABB.get(fg_abb, fg_abb)
+                    result[mlb_abb] = round(float(woba), 3)
+            _cache.set(key, result, _TTL_SPLITS)
+            logger.info("Fetched FanGraphs team wOBA for %d teams", len(result))
+            return result
+        except Exception:
+            logger.warning("Failed to fetch FanGraphs team wOBA for season %s", season)
+            return {}
 
     def fetch_weather_forecast(
         self, lat: float, lng: float, game_datetime: datetime

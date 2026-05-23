@@ -5,27 +5,81 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Pitcher Streamer</title>
   <style>
-    /* Loading bar — snaps to 100% and fades on DOMContentLoaded (cache hit) */
+    :root {
+      --accent: #1a6b3c;
+      --accent-light: #e8f5ee;
+      --bg: #f4f5f7;
+      --surface: #fff;
+      --border: #e2e5e9;
+      --text: #1a1d23;
+      --text-muted: #6b7280;
+      --th-bg: #3d4451;
+      --th-text: #f0f2f5;
+      --two-start-bg: #e6f4ec;
+      --two-start-border: #a8d5b8;
+      --one-start-bg: #fdf6e3;
+      --one-start-border: #e8d48a;
+    }
+
+    /* Loading bar */
     #loading-bar {
       position: fixed; top: 0; left: 0; height: 3px; width: 0;
-      background: linear-gradient(90deg, #28a745, #4fc3f7);
+      background: linear-gradient(90deg, var(--accent), #4fc3f7);
       z-index: 9999;
     }
     #loading-bar.done { transition: width 0.15s ease, opacity 0.4s ease 0.15s; opacity: 0; }
 
-    body { font-family: system-ui, sans-serif; font-size: 14px; padding: 1rem 2rem; background: #f5f5f5; color: #222; }
-    h1 { margin-bottom: 0.25rem; }
-    .week-range { color: #666; margin-bottom: 1.5rem; }
-    h2 { margin-top: 2rem; margin-bottom: 0.5rem; }
-    table { border-collapse: collapse; width: 100%; background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,.1); }
-    th { background: #333; color: #fff; text-align: left; padding: 6px 10px; font-size: 13px; }
-    td { padding: 6px 10px; border-bottom: 1px solid #e0e0e0; vertical-align: top; }
-    tr.two-starts { background: #d4edda; }
-    tr.one-start  { background: #fff3cd; }
-    tr.zero-starts { background: #f8f8f8; color: #999; }
+    * { box-sizing: border-box; }
+    body { font-family: system-ui, -apple-system, sans-serif; font-size: 14px;
+           padding: 0; background: var(--bg); color: var(--text); margin: 0; }
+
+    /* Header */
+    .site-header {
+      background: var(--surface); border-bottom: 1px solid var(--border);
+      padding: 0.75rem 2rem; display: flex; align-items: center; gap: 1.5rem;
+      box-shadow: 0 1px 3px rgba(0,0,0,.06);
+    }
+    .site-header h1 {
+      margin: 0; font-size: 18px; font-weight: 700; letter-spacing: -0.3px;
+      color: var(--accent); white-space: nowrap;
+    }
+    .site-header h1 span { color: var(--text-muted); font-weight: 400; font-size: 14px; margin-left: 6px; }
+    .header-controls { display: flex; align-items: center; gap: 1rem; flex: 1; }
+    .header-meta { margin-left: auto; color: var(--text-muted); font-size: 12px; white-space: nowrap; }
+
+    /* Week select */
+    .week-select {
+      font-size: 13px; padding: 4px 8px; border: 1px solid var(--border);
+      border-radius: 6px; background: var(--bg); color: var(--text);
+      cursor: pointer; outline: none;
+    }
+    .week-select:focus { border-color: var(--accent); }
+    .week-label { font-size: 13px; color: var(--text-muted); }
+
+    /* Page content */
+    .page-content { padding: 1.25rem 2rem 2rem; }
+
+    h2 { margin: 1.5rem 0 0.5rem; font-size: 15px; font-weight: 600;
+         color: var(--text); letter-spacing: -0.1px; }
+
+    /* Tables */
+    table { border-collapse: collapse; width: 100%; background: var(--surface);
+            border-radius: 8px; overflow: hidden;
+            box-shadow: 0 1px 3px rgba(0,0,0,.07), 0 0 0 1px var(--border); }
+    th { background: var(--th-bg); color: var(--th-text); text-align: left;
+         padding: 7px 12px; font-size: 12px; font-weight: 500; letter-spacing: 0.3px;
+         text-transform: uppercase; }
+    td { padding: 7px 12px; border-bottom: 1px solid var(--border); vertical-align: top; }
+    tbody tr:last-child td { border-bottom: none; }
+    tbody tr:hover { background: #f9fafb; }
+    tr.two-starts { background: var(--two-start-bg); border-left: 3px solid var(--two-start-border); }
+    tr.two-starts:hover { background: #daeee4; }
+    tr.one-start  { background: var(--one-start-bg); }
+    tr.one-start:hover { background: #f7efcf; }
+    tr.zero-starts { color: var(--text-muted); }
 
     /* Start cells */
-    .starts-list { display: flex; flex-direction: column; gap: 4px; }
+    .starts-list { display: flex; flex-direction: column; gap: 5px; }
     .start-cell { font-size: 12px; display: flex; align-items: flex-start; gap: 6px; }
     .start-meta { white-space: nowrap; line-height: 1.8; }
     .start-score-col { flex-shrink: 0; }
@@ -33,75 +87,131 @@
     .start-summary:hover .score-badge { opacity: 0.75; }
     .start-summary .score-badge { text-decoration: underline dotted; }
 
-    /* Confidence tier styling — cg9/egg */
-    .start-cell.confirmed .start-summary { font-weight: bold; }
+    /* Confidence tiers */
+    .start-cell.confirmed .start-summary { font-weight: 600; }
     .start-cell.projected .start-summary { font-style: italic; }
-    .start-cell.unknown .start-summary { color: #999; }
+    .start-cell.unknown .start-summary { color: var(--text-muted); }
     .start-cell.unknown .score-badge { opacity: 0.5; }
-    .tier-confirmed { color: #e65c00; font-size: 13px; }
-    .tier-projected { color: #6f42c1; font-size: 11px; }
-    .tier-unknown   { color: #999; font-size: 11px; }
-    .gameday-link { color: #555; font-size: 11px; text-decoration: none; margin-left: 2px; }
-    .gameday-link:hover { color: #000; }
+    .tier-confirmed { color: #d97706; font-size: 13px; }
+    .tier-projected { color: #7c3aed; font-size: 11px; }
+    .tier-unknown   { color: #9ca3af; font-size: 11px; }
+    .gameday-link { color: var(--text-muted); font-size: 11px; text-decoration: none; margin-left: 2px; }
+    .gameday-link:hover { color: var(--text); }
 
     /* Score badges */
-    .score-badge { display: inline-block; padding: 1px 6px; border-radius: 3px; font-weight: bold; font-size: 12px; }
-    .score-green  { background: #28a745; color: #fff; }
-    .score-yellow { background: #ffc107; color: #333; }
-    .score-red    { background: #dc3545; color: #fff; }
+    .score-badge { display: inline-block; padding: 2px 7px; border-radius: 4px;
+                   font-weight: 600; font-size: 12px; letter-spacing: 0.2px; }
+    .score-green  { background: #dcfce7; color: #166534; }
+    .score-yellow { background: #fef9c3; color: #854d0e; }
+    .score-red    { background: #fee2e2; color: #991b1b; }
 
     /* Flags */
-    .flag-rain   { color: #1565c0; }
-    .flag-repeat { color: #e65100; }
-    .park-dim    { color: #888; font-size: 11px; }
-    .no-starts   { color: #aaa; font-style: italic; font-size: 12px; }
+    .flag-rain   { color: #2563eb; }
+    .flag-repeat { color: #ea580c; }
+    .no-starts   { color: #9ca3af; font-style: italic; font-size: 12px; }
 
-    /* Starts popup panel */
-    .starts-popup { display: none; margin-top: 4px; padding: 6px 10px; background: #f0f0f0;
-                    border-left: 3px solid #aaa; border-radius: 2px; font-size: 12px; line-height: 1.7; }
+    /* Starts popup */
+    .starts-popup { display: none; margin-top: 5px; padding: 6px 10px;
+                    background: #f8fafc; border: 1px solid var(--border);
+                    border-radius: 5px; font-size: 12px; line-height: 1.7; }
     details[open] .starts-popup { display: block; }
     .starts-popup-row { display: flex; align-items: baseline; gap: 6px; padding: 2px 0; }
     .starts-popup-badge { flex-shrink: 0; min-width: 18px; text-align: center; }
     .starts-popup-game { flex: 1; }
-    .starts-popup-reason { color: #666; font-size: 11px; }
+    .starts-popup-reason { color: var(--text-muted); font-size: 11px; }
     details.starts-toggle > summary { list-style: none; cursor: pointer; }
     details.starts-toggle > summary::-webkit-details-marker { display: none; }
-    .starts-count-link { font-weight: bold; text-decoration: underline dotted; cursor: pointer; }
-    .starts-count-link:hover { opacity: 0.75; }
+    .starts-count-link { font-weight: 600; text-decoration: underline dotted; cursor: pointer;
+                         text-underline-offset: 2px; }
+    .starts-count-link:hover { opacity: 0.7; }
 
-    /* Score breakdown panel — b77 */
-    .breakdown { display: none; margin-top: 4px; padding: 6px 10px; background: #f0f0f0;
-                 border-left: 3px solid #aaa; border-radius: 2px; font-size: 12px; line-height: 1.7; }
+    /* Score breakdown panel */
+    .breakdown { display: none; margin-top: 5px; padding: 8px 12px;
+                 background: #f8fafc; border: 1px solid var(--border);
+                 border-radius: 5px; font-size: 12px; line-height: 1.7; }
     details[open] .breakdown { display: block; }
-    .breakdown table { background: none; box-shadow: none; font-size: 12px; width: auto; border-collapse: collapse; }
+    .breakdown table { background: none; box-shadow: none; font-size: 12px;
+                       width: auto; border-collapse: collapse; border-radius: 0; }
     .breakdown td { padding: 2px 10px 2px 0; border: none; vertical-align: top; }
-    .breakdown .bd-label { color: #444; font-weight: 600; white-space: nowrap; }
-    .breakdown .bd-delta { font-weight: bold; min-width: 46px; text-align: right; white-space: nowrap; }
-    .breakdown .bd-delta.pos { color: #1a7f37; }
-    .breakdown .bd-delta.neg { color: #cf222e; }
-    .breakdown .bd-delta.zero { color: #888; }
-    .breakdown .bd-explain { color: #666; font-size: 11px; max-width: 260px; }
-    .breakdown .bd-total { border-top: 1px solid #bbb; font-weight: bold; }
-    .breakdown .bd-total td { padding-top: 4px; }
+    .breakdown .bd-label { color: #374151; font-weight: 600; white-space: nowrap; }
+    .breakdown .bd-delta { font-weight: 700; min-width: 46px; text-align: right; white-space: nowrap; }
+    .breakdown .bd-delta.pos { color: #166534; }
+    .breakdown .bd-delta.neg { color: #991b1b; }
+    .breakdown .bd-delta.zero { color: #9ca3af; }
+    .breakdown .bd-explain { color: var(--text-muted); font-size: 11px; max-width: 280px; word-break: break-word; }
+    .breakdown .bd-total { border-top: 1px solid var(--border); font-weight: bold; }
+    .breakdown .bd-total td { padding-top: 5px; }
     details > summary { list-style: none; }
     details > summary::-webkit-details-marker { display: none; }
-    details.key { margin-bottom: 1.5rem; }
-    details.key > summary { cursor: pointer; color: #555; font-size: 13px; display: inline-block; }
-    details.key > summary:hover { color: #000; }
-    .key-body { margin-top: 0.5rem; padding: 0.75rem 1rem; background: #fff;
-                box-shadow: 0 1px 3px rgba(0,0,0,.1); font-size: 13px; max-width: 700px; }
-    .key-section { margin-bottom: 0.5rem; line-height: 1.6; }
+
+    /* Key panel */
+    details.key { margin-bottom: 1.25rem; }
+    details.key > summary { cursor: pointer; color: var(--text-muted); font-size: 12px;
+                             display: inline-flex; align-items: center; gap: 4px;
+                             padding: 3px 8px; border: 1px solid var(--border);
+                             border-radius: 5px; background: var(--surface); user-select: none; }
+    details.key > summary:hover { color: var(--text); border-color: #9ca3af; }
+    details.key[open] > summary { color: var(--text); }
+    .key-body { margin-top: 0.5rem; padding: 0.875rem 1rem; background: var(--surface);
+                border: 1px solid var(--border); border-radius: 6px;
+                font-size: 13px; max-width: 740px; }
+    .key-section { margin-bottom: 0.5rem; line-height: 1.65; color: #374151; }
     .key-section:last-child { margin-bottom: 0; }
+
     /* Savant name link */
-    .savant-link { color: #222; text-decoration: none; border-bottom: 1px dotted #999; }
-    .savant-link:hover { color: #c00; border-bottom-color: #c00; }
-    /* K%-BB% coloring */
-    .k-minus-bb { font-variant-numeric: tabular-nums; white-space: nowrap; }
+    .savant-link { color: var(--text); text-decoration: none;
+                   border-bottom: 1px dotted #9ca3af; }
+    .savant-link:hover { color: var(--accent); border-bottom-color: var(--accent); }
+    .hand-badge { font-size: 11px; color: var(--text-muted); font-weight: 400;
+                  margin-left: 4px; letter-spacing: 0.2px; }
+
+    /* Past-start game line */
+    .game-line { font-size: 12px; }
+    .game-line-main { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+    .game-decision { font-weight: 700; font-size: 12px; }
+    .game-decision.win  { color: #166534; }
+    .game-decision.loss { color: #991b1b; }
+    .game-stat { color: var(--text-muted); white-space: nowrap; }
+    .game-fip  { color: var(--text-muted); font-size: 11px; }
+    .game-savant { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 3px;
+                   font-size: 11px; color: var(--text-muted); }
+    .game-savant span { white-space: nowrap; }
+    .game-score-badge { display: inline-block; padding: 1px 7px; border-radius: 4px;
+                        font-weight: 700; font-size: 12px; margin-left: 4px; }
+    .gs-great  { background: #dcfce7; color: #166534; }
+    .gs-ok     { background: #fef9c3; color: #854d0e; }
+    .gs-rough  { background: #fee2e2; color: #991b1b; }
+
+    /* K%-BB%, ERA, WHIP stat cells */
+    .k-minus-bb, .era-whip { font-variant-numeric: tabular-nums; white-space: nowrap; font-size: 13px; }
+    .era-whip { color: var(--text-muted); }
+    .era-whip .slash { color: var(--border); margin: 0 2px; }
+    /* Opp wOBA/OPS in start-meta */
+    .opp-ops { color: var(--text-muted); font-size: 11px; margin-left: 4px; }
+
+    /* Narrow columns: fixed width so they don't grow. Schedule column gets the rest. */
+    #roster-table th:nth-child(1), #roster-table td:nth-child(1) { white-space: nowrap; }
+    #roster-table th:nth-child(2), #roster-table td:nth-child(2) { width: 52px;  white-space: nowrap; }
+    #roster-table th:nth-child(3), #roster-table td:nth-child(3) { width: 60px;  white-space: nowrap; }
+    #roster-table th:nth-child(4), #roster-table td:nth-child(4) { width: 80px;  white-space: nowrap; }
+    #roster-table th:nth-child(5), #roster-table td:nth-child(5) { width: 54px;  white-space: nowrap; }
+    #roster-table th:nth-child(6), #roster-table td:nth-child(6) { width: 54px;  white-space: nowrap; }
+    #roster-table th:last-child,   #roster-table td:last-child   { width: 99%; }
+
+    #waiver-table th:nth-child(1), #waiver-table td:nth-child(1) { white-space: nowrap; }
+    #waiver-table th:nth-child(2), #waiver-table td:nth-child(2) { width: 52px;  white-space: nowrap; }
+    #waiver-table th:nth-child(3), #waiver-table td:nth-child(3) { width: 60px;  white-space: nowrap; }
+    #waiver-table th:nth-child(4), #waiver-table td:nth-child(4) { width: 58px;  white-space: nowrap; }
+    #waiver-table th:nth-child(5), #waiver-table td:nth-child(5) { width: 80px;  white-space: nowrap; }
+    #waiver-table th:nth-child(6), #waiver-table td:nth-child(6) { width: 54px;  white-space: nowrap; }
+    #waiver-table th:nth-child(7), #waiver-table td:nth-child(7) { width: 54px;  white-space: nowrap; }
+    #waiver-table th:nth-child(8), #waiver-table td:nth-child(8) { width: 68px;  white-space: nowrap; }
+    #waiver-table th:last-child,   #waiver-table td:last-child   { width: 99%; }
 
     /* Sortable columns */
     th[data-col] { cursor: pointer; user-select: none; white-space: nowrap; }
-    th[data-col]:hover { background: #444; }
-    th[data-col]::after { content: ' ⇅'; opacity: 0.4; font-size: 11px; }
+    th[data-col]:hover { background: #4b5563; }
+    th[data-col]::after { content: ' ⇅'; opacity: 0.35; font-size: 10px; }
     th[data-col].asc::after { content: ' ↑'; opacity: 1; }
     th[data-col].desc::after { content: ' ↓'; opacity: 1; }
   </style>
@@ -109,15 +219,21 @@
 <body>
 <div id="loading-bar"></div>
 
-<h1>Pitcher Streamer</h1>
-<div class="week-range">
-  <select onchange="location='/?week='+this.value" style="font-size:14px;margin-right:0.75rem;">
-    <option value="0"{{ ' selected' if week_offset == 0 }}>{{ this_week_label }}</option>
-    <option value="1"{{ ' selected' if week_offset == 1 }}>{{ next_week_label }}</option>
-  </select>
-  {{ week_start.strftime("%a %b %-d") }} – {{ week_end.strftime("%a %b %-d, %Y") }}
-  {%- if fetched_at %} &nbsp;·&nbsp; <span title="Data refreshes every 2 hours">Updated {{ fetched_at.strftime("%-I:%M %p") }}</span>{%- endif %}
-</div>
+<header class="site-header">
+  <h1>Pitcher Streamer <span>fantasy baseball</span></h1>
+  <div class="header-controls">
+    <select class="week-select" onchange="location='/?week='+this.value">
+      <option value="0"{{ ' selected' if week_offset == 0 }}>{{ this_week_label }}</option>
+      <option value="1"{{ ' selected' if week_offset == 1 }}>{{ next_week_label }}</option>
+    </select>
+    <span class="week-label">{{ week_start.strftime("%b %-d") }} – {{ week_end.strftime("%b %-d, %Y") }}</span>
+  </div>
+  {%- if fetched_at %}
+  <div class="header-meta" title="Data refreshes every 2 hours">Updated {{ fetched_at.strftime("%-I:%M %p") }}</div>
+  {%- endif %}
+</header>
+
+<div class="page-content">
 
 <details class="key">
   <summary>Key</summary>
@@ -277,10 +393,55 @@
 {%- set tier = s.confidence | default('UNKNOWN') %}
 <div class="start-cell {{ tier | lower }}">
   <div class="start-score-col">
+    {%- if s.is_past and s.game_stats %}
+    {%- set gs = s.game_stats %}
+    <details>
+      <summary class="start-summary" title="Click to see game line">{{ score_badge(s.score) }}</summary>
+      <div class="breakdown">
+        <div class="game-line">
+          <div class="game-line-main">
+            {%- if gs.decision %}
+            <span class="game-decision {{ 'win' if gs.decision == 'W' else 'loss' if gs.decision == 'L' else '' }}">({{ gs.decision }})</span>
+            {%- endif %}
+            <span class="game-stat">{{ gs.ip }} IP</span>
+            <span class="game-stat">{{ gs.er }} ER</span>
+            <span class="game-stat">{{ gs.h }} H</span>
+            <span class="game-stat">{{ gs.bb }} BB</span>
+            <span class="game-stat">{{ gs.k }} K</span>
+            <span class="game-stat">{{ gs.hr }} HR</span>
+            <span class="game-stat">{{ gs.pitches }}p</span>
+            {%- if gs.fip is not none %}
+            <span class="game-fip">· FIP {{ gs.fip }}</span>
+            {%- endif %}
+            {%- if gs.game_score is not none %}
+            <span class="game-score-badge {{ 'gs-great' if gs.game_score >= 60 else 'gs-ok' if gs.game_score >= 45 else 'gs-rough' }}"
+                  title="Game Score: process-oriented quality metric (50 = avg, ignores hits/runs)">GS {{ gs.game_score }}</span>
+            {%- endif %}
+          </div>
+          {%- if s.savant_stats %}
+          {%- set sv = s.savant_stats %}
+          <div class="game-savant">
+            {%- if sv.csw_pct is not none %}<span title="Called Strike + Whiff %">CSW {{ sv.csw_pct }}%</span>{%- endif %}
+            {%- if sv.whiff_pct is not none %}<span>Whiff {{ sv.whiff_pct }}%</span>{%- endif %}
+            {%- if sv.chase_pct is not none %}<span>Chase {{ sv.chase_pct }}%</span>{%- endif %}
+            {%- if sv.f_strike_pct is not none %}<span title="First-pitch strike rate">F-Strike {{ sv.f_strike_pct }}%</span>{%- endif %}
+            {%- if sv.zone_contact_pct is not none %}<span title="Contact rate on pitches in zone">Zone-Con {{ sv.zone_contact_pct }}%</span>{%- endif %}
+            {%- if sv.hard_hit_pct is not none %}<span>Hard-hit {{ sv.hard_hit_pct }}%</span>{%- endif %}
+            {%- if sv.avg_ev is not none %}<span>Avg EV {{ sv.avg_ev }}</span>{%- endif %}
+            {%- if sv.barrels is not none %}<span>Barrels {{ sv.barrels }}</span>{%- endif %}
+            {%- if sv.swords is not none and sv.swords > 0 %}<span title="Sword swings — batter completely fooled">⚔ {{ sv.swords }}</span>{%- endif %}
+            {%- if sv.avg_fb_velo is not none %}<span>FB {{ sv.avg_fb_velo }} mph</span>{%- endif %}
+          </div>
+          {%- endif %}
+        </div>
+      </div>
+    </details>
+    {%- else %}
     <details>
       <summary class="start-summary" title="Click to see score breakdown">{{ score_badge(s.score) }}</summary>
       {{ breakdown_panel(s.breakdown) }}
     </details>
+    {%- endif %}
   </div>
   <div class="start-meta">
     {%- if tier == 'CONFIRMED' %}<span class="tier-confirmed" title="MLB confirmed probable starter">★</span> {%- endif %}
@@ -292,9 +453,16 @@
     {%- else %}
       {{ s.opponent }}
     {%- endif %}
+    {%- if not s.is_past %}
     {%- if s.temp is not none %}&nbsp;{{ s.temp|int }}°F{%- endif %}
     {%- if s.rain_pct is not none and s.rain_pct > 50 %}<span class="flag-rain" title="Rain {{ s.rain_pct|int }}%">⛈</span>{%- endif %}
     {%- if s.familiarity_flag %}<span class="flag-repeat" title="Faced {{ s.familiarity_days }}d ago">⚠</span>{%- endif %}
+    {%- if s.opp_woba is not none %}
+    <span class="opp-ops" title="Opponent wOBA (FanGraphs, all PA)">wOBA .{{ (s.opp_woba * 1000)|int }}</span>
+    {%- else %}
+    <span class="opp-ops" title="Opponent OPS vs this pitcher's handedness">OPS .{{ (s.opp_ops * 1000)|int }}</span>
+    {%- endif %}
+    {%- endif %}
   </div>
 </div>
 {%- endmacro %}
@@ -308,6 +476,8 @@
       <th data-col="1" data-type="str">Team</th>
       <th data-col="2" data-type="num">Starts</th>
       <th data-col="3" data-type="num" title="Strikeout% minus Walk% (season)">K%-BB%</th>
+      <th data-col="4" data-type="num" title="Season ERA">ERA</th>
+      <th data-col="5" data-type="num" title="Season WHIP">WHIP</th>
       <th>Schedule <span style="font-weight:normal;font-size:11px">(click score to expand)</span></th>
     </tr>
   </thead>
@@ -317,6 +487,7 @@
       <td>
         {%- if p.savant_url %}<a href="{{ p.savant_url }}" target="_blank" class="savant-link" title="Baseball Savant">{{ p.name }}</a>
         {%- else %}{{ p.name }}{%- endif %}
+        <span class="hand-badge">{{ 'LHP' if p.throws == 'L' else 'RHP' }}</span>
       </td>
       <td>{{ p.team_abbr }}</td>
       <td>{{ starts_cell(p) }}</td>
@@ -324,6 +495,8 @@
         {%- if p.k_minus_bb is not none %}{{ "%+.1f"|format(p.k_minus_bb) }}%
         {%- else %}<span class="no-starts">—</span>{%- endif %}
       </td>
+      <td>{{ p.era if p.era else '—' }}</td>
+      <td>{{ "%.2f"|format(p.whip) if p.whip else '—' }}</td>
       <td>
         {%- if p.starts %}
         <div class="starts-list">
@@ -336,7 +509,7 @@
     </tr>
     {%- endfor %}
     {%- if not roster_pitchers %}
-    <tr><td colspan="5" style="text-align:center;color:#999;">No confirmed starters found on roster.</td></tr>
+    <tr><td colspan="7" style="text-align:center;color:#999;">No confirmed starters found on roster.</td></tr>
     {%- endif %}
   </tbody>
 </table>
@@ -351,7 +524,9 @@
       <th data-col="2" data-type="num">Starts</th>
       <th data-col="3" data-type="num">Score</th>
       <th data-col="4" data-type="num" title="Strikeout% minus Walk% (season)">K%-BB%</th>
-      <th data-col="5" data-type="num">Owned%</th>
+      <th data-col="5" data-type="num" title="Season ERA">ERA</th>
+      <th data-col="6" data-type="num" title="Season WHIP">WHIP</th>
+      <th data-col="7" data-type="num">Owned%</th>
       <th>Schedule <span style="font-weight:normal;font-size:11px">(click score to expand)</span></th>
     </tr>
   </thead>
@@ -361,6 +536,7 @@
       <td>
         {%- if p.savant_url %}<a href="{{ p.savant_url }}" target="_blank" class="savant-link" title="Baseball Savant">{{ p.name }}</a>
         {%- else %}{{ p.name }}{%- endif %}
+        <span class="hand-badge">{{ 'LHP' if p.throws == 'L' else 'RHP' }}</span>
       </td>
       <td>{{ p.team_abbr }}</td>
       <td>{{ starts_cell(p) }}</td>
@@ -369,6 +545,8 @@
         {%- if p.k_minus_bb is not none %}{{ "%+.1f"|format(p.k_minus_bb) }}%
         {%- else %}<span class="no-starts">—</span>{%- endif %}
       </td>
+      <td>{{ p.era if p.era else '—' }}</td>
+      <td>{{ "%.2f"|format(p.whip) if p.whip else '—' }}</td>
       <td>{{ p.percent_owned }}%</td>
       <td>
         <div class="starts-list">
@@ -378,10 +556,12 @@
     </tr>
     {%- endfor %}
     {%- if not waiver_pitchers %}
-    <tr><td colspan="7" style="text-align:center;color:#999;">No waiver SPs with starts this week found.</td></tr>
+    <tr><td colspan="9" style="text-align:center;color:#999;">No waiver SPs with starts this week found.</td></tr>
     {%- endif %}
   </tbody>
 </table>
+
+</div><!-- /.page-content -->
 
 <script>
   // Finish loading bar as soon as the DOM is parsed

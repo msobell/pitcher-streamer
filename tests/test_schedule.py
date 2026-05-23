@@ -311,3 +311,187 @@ def test_fetch_recent_transactions_returns_empty_on_error():
     client.get.side_effect = RuntimeError("network error")
     conn = MlbStatsConnector(http_client=client)
     assert conn.fetch_recent_transactions() == set()
+
+
+# --- fetch_game_boxscore ---
+
+def _make_boxscore_response(pitcher_id: int, side: str, stats: dict, note: str = "") -> dict:
+    return {
+        "teams": {
+            side: {
+                "pitchers": [pitcher_id],
+                "players": {
+                    f"ID{pitcher_id}": {
+                        "person": {"id": pitcher_id, "fullName": "Test Pitcher"},
+                        "stats": {"pitching": {"note": note, **stats}},
+                    }
+                },
+            },
+            "home" if side == "away" else "away": {"pitchers": [], "players": {}},
+        }
+    }
+
+
+def test_fetch_game_boxscore_home_pitcher():
+    payload = _make_boxscore_response(
+        554430, "home",
+        {"inningsPitched": "6.1", "earnedRuns": 2, "hits": 5,
+         "baseOnBalls": 1, "strikeOuts": 8, "homeRuns": 0,
+         "pitchesThrown": 95},
+        note="(W, 5-2)",
+    )
+    conn = MlbStatsConnector(http_client=_mock_http(payload))
+    result = conn.fetch_game_boxscore(999001, 554430)
+    assert result is not None
+    assert result["ip"] == "6.1"
+    assert result["er"] == 2
+    assert result["k"] == 8
+    assert result["hr"] == 0
+    assert result["pitches"] == 95
+    assert result["decision"] == "W"
+
+
+def test_fetch_game_boxscore_away_pitcher():
+    payload = _make_boxscore_response(
+        622663, "away",
+        {"inningsPitched": "5.0", "earnedRuns": 3, "hits": 7,
+         "baseOnBalls": 2, "strikeOuts": 5, "homeRuns": 1,
+         "pitchesThrown": 88},
+        note="(L, 2-4)",
+    )
+    conn = MlbStatsConnector(http_client=_mock_http(payload))
+    result = conn.fetch_game_boxscore(999002, 622663)
+    assert result is not None
+    assert result["decision"] == "L"
+    assert result["hr"] == 1
+
+
+def test_fetch_game_boxscore_no_decision():
+    payload = _make_boxscore_response(
+        543037, "home",
+        {"inningsPitched": "4.2", "earnedRuns": 4, "hits": 8,
+         "baseOnBalls": 3, "strikeOuts": 4, "homeRuns": 2,
+         "pitchesThrown": 80},
+        note="",
+    )
+    conn = MlbStatsConnector(http_client=_mock_http(payload))
+    result = conn.fetch_game_boxscore(999003, 543037)
+    assert result is not None
+    assert result["decision"] is None
+
+
+def test_fetch_game_boxscore_pitcher_not_in_game():
+    payload = _make_boxscore_response(
+        999999, "home",
+        {"inningsPitched": "6.0", "earnedRuns": 1},
+    )
+    conn = MlbStatsConnector(http_client=_mock_http(payload))
+    # Pitcher 554430 didn't pitch in this game
+    result = conn.fetch_game_boxscore(999004, 554430)
+    assert result is None
+
+
+def test_fetch_game_boxscore_returns_none_on_error():
+    client = MagicMock()
+    client.get.side_effect = RuntimeError("network error")
+    conn = MlbStatsConnector(http_client=client)
+    assert conn.fetch_game_boxscore(999005, 554430) is None
+
+
+# --- fetch_game_savant ---
+
+def _make_savant_gf_response(pitcher_id: int, pitches: list[dict]) -> dict:
+    return {"home_pitchers": {str(pitcher_id): pitches}, "away_pitchers": {}}
+
+
+def test_fetch_game_savant_computes_whiff_and_chase(monkeypatch):
+    pitches = [
+        # In-zone swinging strike → whiff, not a chase
+        {"description": "Swinging Strike", "isInZone": True, "savantIsInZone": False,
+         "hit_speed": "", "is_barrel": False, "pitch_type": "FF", "start_speed": 95.0},
+        # Out-of-zone foul → chase, not a whiff
+        {"description": "Foul", "isInZone": False, "savantIsInZone": False,
+         "hit_speed": "", "is_barrel": False, "pitch_type": "SL", "start_speed": 84.0},
+        # Out-of-zone ball (not swung at) → not a chase
+        {"description": "Ball", "isInZone": False, "savantIsInZone": False,
+         "hit_speed": "", "is_barrel": False, "pitch_type": "SL", "start_speed": 83.5},
+        # In-zone ball in play → BIP, hard hit, barrel
+        {"description": "In play, out(s)", "isInZone": True, "savantIsInZone": False,
+         "hit_speed": "98.5", "is_barrel": True, "pitch_type": "FF", "start_speed": 94.5},
+        # Called strike — no swing
+        {"description": "Called Strike", "isInZone": True, "savantIsInZone": False,
+         "hit_speed": "", "is_barrel": False, "pitch_type": "FF", "start_speed": 95.5},
+    ]
+    fake_resp = MagicMock()
+    fake_resp.raise_for_status.return_value = None
+    fake_resp.json.return_value = _make_savant_gf_response(554430, pitches)
+    monkeypatch.setattr("httpx.get", lambda *a, **kw: fake_resp)
+
+    conn = MlbStatsConnector()
+    result = conn.fetch_game_savant(822982, 554430)
+    assert result is not None
+    # Swings: swinging strike + foul + BIP = 3. Whiff = 1 (swinging strike only).
+    assert result["whiff_pct"] == 33       # round(1/3 * 100)
+    # Out-of-zone pitches: foul + ball = 2. Chases (swings outside zone): foul = 1.
+    assert result["chase_pct"] == 50       # round(1/2 * 100)
+    assert result["hard_hit_pct"] == 100   # 1 BIP at 98.5 >= 95 mph
+    assert result["barrels"] == 1
+    assert result["avg_ev"] == pytest.approx(98.5)
+    assert result["avg_fb_velo"] == pytest.approx((95.0 + 94.5 + 95.5) / 3, abs=0.1)
+
+
+def test_fetch_game_savant_pitcher_not_in_game(monkeypatch):
+    fake_resp = MagicMock()
+    fake_resp.raise_for_status.return_value = None
+    fake_resp.json.return_value = {"home_pitchers": {}, "away_pitchers": {}}
+    monkeypatch.setattr("httpx.get", lambda *a, **kw: fake_resp)
+
+    conn = MlbStatsConnector()
+    assert conn.fetch_game_savant(822982, 554430) is None
+
+
+def test_fetch_game_savant_returns_none_on_error(monkeypatch):
+    monkeypatch.setattr("httpx.get", lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("down")))
+    conn = MlbStatsConnector()
+    assert conn.fetch_game_savant(822982, 554430) is None
+
+
+# --- fetch_fangraphs_team_woba ---
+
+def test_fetch_fangraphs_team_woba_maps_abbreviations(monkeypatch):
+    # Include one team that needs abbreviation mapping (ARI → AZ)
+    fake_resp = MagicMock()
+    fake_resp.raise_for_status.return_value = None
+    fake_resp.json.return_value = {
+        "data": [
+            {"TeamNameAbb": "LAD", "wOBA": 0.3438},
+            {"TeamNameAbb": "ARI", "wOBA": 0.3100},   # should map to AZ
+            {"TeamNameAbb": "CHW", "wOBA": 0.3240},   # should map to CWS
+            {"TeamNameAbb": "KCR", "wOBA": 0.3180},   # should map to KC
+            {"TeamNameAbb": "SDP", "wOBA": 0.2940},   # should map to SD
+            {"TeamNameAbb": "SFG", "wOBA": 0.2960},   # should map to SF
+            {"TeamNameAbb": "TBR", "wOBA": 0.3260},   # should map to TB
+            {"TeamNameAbb": "WSN", "wOBA": 0.3280},   # should map to WSH
+        ]
+    }
+    monkeypatch.setattr("httpx.get", lambda *a, **kw: fake_resp)
+
+    conn = MlbStatsConnector()
+    result = conn.fetch_fangraphs_team_woba(2026)
+
+    assert result["LAD"] == pytest.approx(0.344, abs=0.001)
+    assert "ARI" not in result
+    assert result["AZ"] == pytest.approx(0.310, abs=0.001)
+    assert "CHW" not in result
+    assert result["CWS"] == pytest.approx(0.324, abs=0.001)
+    assert result["KC"] == pytest.approx(0.318, abs=0.001)
+    assert result["SD"] == pytest.approx(0.294, abs=0.001)
+    assert result["SF"] == pytest.approx(0.296, abs=0.001)
+    assert result["TB"] == pytest.approx(0.326, abs=0.001)
+    assert result["WSH"] == pytest.approx(0.328, abs=0.001)
+
+
+def test_fetch_fangraphs_team_woba_returns_empty_on_error(monkeypatch):
+    monkeypatch.setattr("httpx.get", lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("FG down")))
+    conn = MlbStatsConnector()
+    assert conn.fetch_fangraphs_team_woba(2026) == {}

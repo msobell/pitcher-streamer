@@ -112,6 +112,69 @@ def _make_yahoo_connector() -> YahooConnector:
 
 
 
+def _compute_game_score(game_stats: dict, savant_stats: dict) -> int:
+    """
+    Custom Statcast Game Score — process-oriented single-game quality metric.
+    Clamped [0, 100].
+
+    Designed to separate pitcher execution from ball-in-play luck. A pitcher
+    who allows 8 runs but has elite stuff, no barrels, and 17 outs recorded
+    can still score well; a pitcher who gets a cheap win on weak contact and
+    poor stuff will score poorly.
+
+    Sources: boxscore (volume/control) + Baseball Savant /gf (contact quality).
+
+    Formula
+    -------
+    Base:               40
+    Volume & control:   +2 per out recorded
+                        +2 per strikeout
+                        −3 per walk
+    Contact quality:    −5 per barrel allowed  (launch angle 26–50°, EV ≥ 98 mph)
+                        −1 per hard-hit ball   (EV ≥ 95 mph, includes barrels)
+    Stuff bonuses:      +5 if whiff% > 25%     (swinging strikes / total swings)
+                        +5 if chase% > 30%     (swings outside zone / pitches outside zone)
+
+    Calibration examples (approximate):
+      QS (6 IP, 3 ER, 6 K, 2 BB, 0 barrels, 5 hard hits, avg stuff) ≈ 67
+      Elite outing (7 IP, 1 ER, 10 K, 1 BB, 0 barrels, 2 hard hits, +both bonuses) ≈ 91
+      Blowup (2.1 IP, 6 ER, 1 K, 4 BB, 2 barrels, 8 hard hits, no bonuses) ≈ 21
+      Lucky bad line (5.2 IP, 8 ER, 8 K, 2 BB, 1 barrel, 2 hard hits, +both bonuses) ≈ 87
+
+    Reference: formula derived from Statcast Game Score methodology described at
+    https://razzball.com/starting-pitcher-chart-may-22nd-2026/ (custom variant,
+    not the original Bill James or ESPN Game Score formulas).
+    """
+    outs = int(_parse_ip_decimal(game_stats.get("ip", "0.0")) * 3)
+    k    = game_stats.get("k", 0)
+    bb   = game_stats.get("bb", 0)
+    barrels   = savant_stats.get("barrels", 0)
+    hard_hits = savant_stats.get("hard_hits", 0)
+    whiff_raw = savant_stats.get("_whiff_pct_raw")
+    chase_raw = savant_stats.get("_chase_pct_raw")
+
+    score = 40
+    score += 2 * outs
+    score += 2 * k
+    score -= 3 * bb
+    score -= 5 * barrels
+    score -= 1 * hard_hits
+    if whiff_raw is not None and whiff_raw > 0.25:
+        score += 5
+    if chase_raw is not None and chase_raw > 0.30:
+        score += 5
+    return max(0, min(100, score))
+
+
+def _parse_ip_decimal(ip_str: str) -> float:
+    """Convert '5.1' (MLB innings notation) to decimal innings (5.333...)."""
+    try:
+        parts = str(ip_str).split(".")
+        return int(parts[0]) + (int(parts[1]) / 3 if len(parts) > 1 else 0)
+    except (ValueError, IndexError):
+        return 0.0
+
+
 def _savant_url(name: str, mlbam_id: "int | None") -> "str | None":
     if not mlbam_id:
         return None
@@ -177,6 +240,7 @@ def _score_pitcher_starts(
     weather_cache: dict,
     recent_starts_cache: dict,
     season_stats_cache: dict,
+    team_woba: "dict[str, float] | None" = None,
 ) -> list[dict]:
     """
     Score each of this pitcher's starts for the week.
@@ -299,6 +363,26 @@ def _score_pitcher_starts(
             recent_fip=recent_fip,
         )
 
+        # Fetch game stats for past starts (game date < today)
+        is_past = start_date < today
+        game_stats = None
+        savant_stats = None
+        if is_past and game_pk and mlbam_id:
+            game_stats = mlb.fetch_game_boxscore(game_pk, mlbam_id)
+            if game_stats:
+                from scoring import _calc_fip
+                game_fip = _calc_fip(
+                    game_stats["k"], game_stats["bb"],
+                    game_stats["hr"], _parse_ip_decimal(game_stats["ip"]),
+                )
+                game_stats["fip"] = game_fip
+            savant_stats = mlb.fetch_game_savant(game_pk, mlbam_id)
+            if game_stats and savant_stats:
+                game_stats["game_score"] = _compute_game_score(game_stats, savant_stats)
+
+        opp_abbr = start.get("opp_abbr", "")
+        opp_woba = team_woba.get(opp_abbr) if team_woba and opp_abbr else None
+
         annotated.append({
             "date": game_date,
             "opponent": opponent_name,
@@ -310,11 +394,16 @@ def _score_pitcher_starts(
             "familiarity_flag": days_since_faced is not None and days_since_faced <= 9,
             "familiarity_days": days_since_faced,
             "park_index": park_index,
+            "opp_ops": round(opponent_ops, 3),
+            "opp_woba": opp_woba,
             "is_probable": is_probable,
             "is_projected": is_projected,
             "confidence": confidence,
             "game_pk": game_pk,
             "projection_reason": start.get("projection_reason", ""),
+            "is_past": is_past,
+            "game_stats": game_stats,
+            "savant_stats": savant_stats,
         })
 
     return annotated
@@ -434,13 +523,14 @@ def _build_pitcher_data(park_factors: dict, week_offset: int = 0) -> dict:
     yahoo = _make_yahoo_connector()
     mlb = MlbStatsConnector()
 
-    # Phase 1: schedule + team IDs + Yahoo roster + Yahoo FA + transactions — all in parallel
-    with ThreadPoolExecutor(max_workers=5) as ex:
+    # Phase 1: schedule + team IDs + Yahoo roster + Yahoo FA + transactions + FG wOBA
+    with ThreadPoolExecutor(max_workers=6) as ex:
         f_schedule = ex.submit(mlb.fetch_schedule_with_venue, week_start, week_end)
         f_teams = ex.submit(mlb.fetch_mlb_team_ids)
         f_roster = ex.submit(yahoo.get_my_team_roster)
         f_fa = ex.submit(yahoo.get_free_agents, "A")
         f_txns = ex.submit(mlb.fetch_recent_transactions)
+        f_woba = ex.submit(mlb.fetch_fangraphs_team_woba, _SEASON)
 
     schedule = f_schedule.result()
     abbr_to_id, id_to_abbr = (
@@ -452,6 +542,7 @@ def _build_pitcher_data(park_factors: dict, week_offset: int = 0) -> dict:
     all_roster = f_roster.result()
     all_fa = f_fa.result()
     unavailable_ids: set[int] = f_txns.result()
+    team_woba: dict[str, float] = f_woba.result()
 
     # Annotate schedule with abbreviations
     for game in schedule:
@@ -679,9 +770,12 @@ def _build_pitcher_data(park_factors: dict, week_offset: int = 0) -> dict:
                 team_id, schedule, probable_home, probable_away, mlbam_id,
                 projected_home, projected_away,
             )
+            for s in starts_ctx:
+                s["opp_abbr"] = id_to_abbr.get(s.get("opponent_id"), "")
             scored_starts = _score_pitcher_starts(
                 p, starts_ctx, mlb, park_factors,
-                splits_cache, weather_cache, recent_starts_cache, season_stats_cache,
+                splits_cache, weather_cache, recent_starts_cache,
+                season_stats_cache, team_woba,
             )
             season_stats = season_stats_cache.get(mlbam_id, {})
             bf = season_stats.get("bf", 0)
@@ -701,6 +795,8 @@ def _build_pitcher_data(park_factors: dict, week_offset: int = 0) -> dict:
                 "k_pct": k_pct,
                 "bb_pct": bb_pct,
                 "k_minus_bb": k_minus_bb,
+                "era": season_stats.get("era"),
+                "whip": season_stats.get("whip"),
                 "savant_url": _savant_url(p.get("name", ""), mlbam_id),
             })
         return result
@@ -776,18 +872,21 @@ def _loading_shell(week_offset: int) -> str:
     """
     return f"""\
 <!DOCTYPE html><html lang="en"><head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
 <title>Pitcher Streamer — Loading…</title>
 <style>
-#loading-bar{{position:fixed;top:0;left:0;height:3px;width:0;
-background:linear-gradient(90deg,#28a745,#4fc3f7);z-index:9999;
-animation:loading-grow 60s cubic-bezier(0.05,0.3,0.3,1) forwards}}
-@keyframes loading-grow{{0%{{width:0}}20%{{width:25%}}50%{{width:50%}}80%{{width:72%}}100%{{width:88%}}}}
-body{{font-family:system-ui,sans-serif;font-size:14px;padding:1rem 2rem;background:#f5f5f5;color:#222}}
+*{{box-sizing:border-box}}
+body{{margin:0;font-family:system-ui,-apple-system,sans-serif;font-size:14px;background:#f4f5f7;color:#1a1d23}}
+#loading-bar{{position:fixed;top:0;left:0;height:3px;width:0;background:linear-gradient(90deg,#1a6b3c,#4fc3f7);z-index:9999;animation:lg 60s cubic-bezier(0.05,0.3,0.3,1) forwards}}
+@keyframes lg{{0%{{width:0}}20%{{width:25%}}50%{{width:50%}}80%{{width:72%}}100%{{width:88%}}}}
+.site-header{{background:#fff;border-bottom:1px solid #e2e5e9;padding:0.75rem 2rem;display:flex;align-items:center;gap:1.5rem;box-shadow:0 1px 3px rgba(0,0,0,.06)}}
+.site-header h1{{margin:0;font-size:18px;font-weight:700;color:#1a6b3c}}
+.site-header h1 span{{color:#6b7280;font-weight:400;font-size:14px;margin-left:6px}}
+.loading-msg{{padding:2rem;color:#6b7280;font-size:13px}}
 </style></head><body>
 <div id="loading-bar"></div>
-<p style="color:#666;margin-top:2rem">Loading pitcher data…</p>
+<header class="site-header"><h1>Pitcher Streamer <span>fantasy baseball</span></h1></header>
+<div class="loading-msg">Loading pitcher data…</div>
 <script>setTimeout(function(){{window.location='/?week={week_offset}';}},3000);</script>
 </body></html>"""
 

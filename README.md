@@ -93,6 +93,25 @@ Applied as flat modifiers after the weighted score (not part of the regression):
 
 Weather is sourced from Open-Meteo hourly forecasts for the venue coordinates. Temperature uses the first-pitch hour. Rain probability is the **maximum across hours 1–2 after first pitch** (skipping first pitch itself, which would cause a postponement rather than a shortened start, and skipping hour 3+ when the starter is typically out of the game anyway).
 
+## Game Score (past starts)
+
+For starts that have already happened, clicking the score badge shows the pitcher's game line and a **Game Score** — a process-oriented single-game quality metric that ignores hits and runs in favour of Statcast contact quality.
+
+```
+Base 40
++ 2 × outs recorded
++ 2 × strikeouts
+− 3 × walks
+− 5 × barrels allowed        (launch angle 26–50°, EV ≥ 98 mph)
+− 1 × hard-hit balls allowed  (EV ≥ 95 mph)
++ 5 if whiff% > 25%
++ 5 if chase% > 30%
+```
+
+Clamped to [0, 100]. A pitcher who allows 8 runs on bad-luck contact but records 17 outs, 8 strikeouts, 1 barrel, and elite whiff/chase rates scores ~87 — correctly identifying a good start hidden behind unlucky results.
+
+Statcast stats sourced from Baseball Savant `/gf` endpoint per game. Also shown: CSW% (called strike + whiff rate — gold standard for single-game pitch quality), F-Strike%, Zone-Contact%, hard-hit%, avg EV, barrels, swords, and avg fastball velo.
+
 ### Start confidence
 
 Each start is tagged based on how the assignment was determined:
