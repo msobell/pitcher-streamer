@@ -125,13 +125,16 @@ def test_project_probable_pitchers_confirmed_eligible_for_second_start():
         {"pitcher_id": 1, "name": "Ace", "last_start": _recent(5), "slot": 1,
          "next_eligible": today.isoformat()},
     ]
-    # games: confirmed game today + open game tomorrow
-    today_game = {"game_pk": 100, "date": today.isoformat(), "probable_home_id": 1,
-                  "probable_away_id": None, "is_probable": False}
+    # games: confirmed game today (team 143 home, Ace announced) + open game tomorrow
+    today_game = {"game_pk": 100, "date": today.isoformat(), "home_team_id": 143,
+                  "away_team_id": 99, "probable_home_id": 1, "probable_away_id": None}
     tomorrow_game = {"game_pk": 101, "date": (today + timedelta(days=1)).isoformat(),
-                     "probable_home_id": None, "probable_away_id": None, "is_probable": False}
+                     "home_team_id": 143, "away_team_id": 99,
+                     "probable_home_id": None, "probable_away_id": None}
     result = project_probable_pitchers(143, [today_game, tomorrow_game], rotation,
                                        confirmed_probable_ids={1})
+    # The confirmed game (100) must not appear in projections at all.
+    assert 100 not in result
     # Pitcher confirmed today → next eligible today+5 → not projected for tomorrow
     assert all(v["pitcher_id"] != 1 for v in result.values())
 

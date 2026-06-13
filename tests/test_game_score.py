@@ -1,6 +1,5 @@
 """Unit tests for _compute_game_score — pure, no HTTP."""
 
-import pytest
 from main import _compute_game_score
 
 

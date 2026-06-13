@@ -53,6 +53,8 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Optional, Protocol
 
+import httpx
+
 logger = logging.getLogger(__name__)
 
 # FanGraphs uses different abbreviations for 7 teams vs MLB Stats API.
@@ -132,7 +134,6 @@ class MlbHttpResponse(Protocol):
 
 class RealMlbHttpClient:
     def get(self, url: str, params: Optional[dict] = None, timeout: int = 30):
-        import httpx
         return httpx.get(url, params=params or {}, timeout=timeout)
 
 
@@ -484,6 +485,9 @@ class MlbStatsConnector:
                 }
                 _cache.set(key, result, _TTL_GAME_LOG)
                 return result
+            # Pitcher didn't appear in this game (e.g. wrong projection) —
+            # cache the miss so rebuilds don't refetch the boxscore.
+            _cache.set(key, None, _TTL_GAME_LOG)
         except Exception:
             logger.warning("Failed to fetch boxscore for game %s pitcher %s", game_pk, pitcher_mlbam_id)
         return None
@@ -499,15 +503,20 @@ class MlbStatsConnector:
         if hit is not _MISS:
             return hit
         try:
-            import httpx as _httpx
-            resp = _httpx.get(
-                "https://baseballsavant.mlb.com/gf",
-                params={"game_pk": game_pk},
-                headers={"User-Agent": "Mozilla/5.0"},
-                timeout=15,
-            )
-            resp.raise_for_status()
-            data = resp.json()
+            # The /gf payload covers the whole game (several MB) — cache the raw
+            # response by game_pk so two pitchers in the same game share one download.
+            raw_key = ("savant_gf_raw", game_pk)
+            data = _cache.get(raw_key)
+            if data is _MISS:
+                resp = httpx.get(
+                    "https://baseballsavant.mlb.com/gf",
+                    params={"game_pk": game_pk},
+                    headers={"User-Agent": "Mozilla/5.0"},
+                    timeout=15,
+                )
+                resp.raise_for_status()
+                data = resp.json()
+                _cache.set(raw_key, data, _TTL_GAME_LOG)
 
             pitches = None
             for side in ("home_pitchers", "away_pitchers"):
@@ -538,11 +547,15 @@ class MlbStatsConnector:
             in_zone_swings = [p for p in in_zone if p.get("description", "") in swing_descs]
             in_zone_contacts = [p for p in in_zone if p.get("description", "") in in_zone_contact_descs]
 
-            # First-pitch strikes: pitches where pitcher_pa_number == 1 and it was a strike
-            first_pitches = [p for p in pitches if p.get("pitcher_pa_number") == 1]
+            # First-pitch strikes: the 0-0 pitch of each plate appearance.
+            # (pre_balls/pre_strikes are the count BEFORE the pitch was thrown.)
+            first_pitches = [
+                p for p in pitches
+                if p.get("pre_balls") == 0 and p.get("pre_strikes") == 0
+            ]
             first_pitch_strikes = [
                 p for p in first_pitches
-                if p.get("description", "") in swing_descs | called_strike_descs | {"Foul"}
+                if p.get("description", "") in swing_descs | called_strike_descs
             ]
 
             swords = sum(1 for p in pitches if p.get("isSword"))
@@ -606,8 +619,7 @@ class MlbStatsConnector:
         if hit is not _MISS:
             return hit
         try:
-            import httpx as _httpx
-            resp = _httpx.get(
+            resp = httpx.get(
                 "https://www.fangraphs.com/api/leaders/major-league/data",
                 params={
                     "pos": "all", "stats": "bat", "lg": "all", "qual": "0",
@@ -654,8 +666,6 @@ class MlbStatsConnector:
         if hit is not _MISS:
             return hit
         try:
-            import httpx
-
             resp = httpx.get(
                 "https://api.open-meteo.com/v1/forecast",
                 params={

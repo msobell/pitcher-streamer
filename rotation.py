@@ -174,9 +174,19 @@ def project_probable_pitchers(
             entry["days_since_last_start"] = (as_of_date - confirmed).days
         available.append(entry)
 
-    # Open games: sorted by date, each game_pk treated independently
+    # Open games: this team's slot has no confirmed probable yet. Games where
+    # the team's starter is already announced must be excluded — otherwise a
+    # projection gets "spent" on a game that doesn't need one, starving later
+    # genuinely-open games of that pitcher.
+    def _team_slot_confirmed(g: dict) -> bool:
+        if g.get("home_team_id") == team_id:
+            return bool(g.get("probable_home_id"))
+        if g.get("away_team_id") == team_id:
+            return bool(g.get("probable_away_id"))
+        return False
+
     open_games = sorted(
-        [g for g in week_games if g.get("game_pk") and not g.get("is_probable", False)],
+        [g for g in week_games if g.get("game_pk") and not _team_slot_confirmed(g)],
         key=lambda g: g["date"],
     )
 

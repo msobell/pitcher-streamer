@@ -1,6 +1,5 @@
 """Unit tests for MlbStatsConnector with mocked HTTP."""
 
-import json
 from datetime import date, datetime
 from unittest.mock import MagicMock
 
@@ -224,7 +223,6 @@ def test_fetch_pitcher_recent_starts_returns_empty_on_error():
 # --- fetch_weather_forecast ---
 
 def test_fetch_weather_forecast_returns_none_on_failure(monkeypatch):
-    import connectors
     def _bad_get(*a, **kw):
         raise RuntimeError("Open-Meteo down")
 
@@ -235,8 +233,6 @@ def test_fetch_weather_forecast_returns_none_on_failure(monkeypatch):
 
 
 def test_fetch_weather_forecast_parses_matching_hour(monkeypatch):
-    import httpx
-
     fake_resp = MagicMock()
     fake_resp.raise_for_status.return_value = None
     fake_resp.json.return_value = {
@@ -438,6 +434,38 @@ def test_fetch_game_savant_computes_whiff_and_chase(monkeypatch):
     assert result["barrels"] == 1
     assert result["avg_ev"] == pytest.approx(98.5)
     assert result["avg_fb_velo"] == pytest.approx((95.0 + 94.5 + 95.5) / 3, abs=0.1)
+
+
+def test_fetch_game_savant_csw_fstrike_zone_swords(monkeypatch):
+    pitches = [
+        # First pitch (0-0), called strike → counts toward CSW and F-Strike
+        {"description": "Called Strike", "isInZone": True, "pre_balls": 0, "pre_strikes": 0,
+         "hit_speed": "", "is_barrel": False},
+        # First pitch (0-0), ball → F-Strike denominator only, not numerator
+        {"description": "Ball", "isInZone": False, "pre_balls": 0, "pre_strikes": 0,
+         "hit_speed": "", "is_barrel": False},
+        # Mid-count swinging strike in zone → CSW + whiff + in-zone swing (no contact)
+        {"description": "Swinging Strike", "isInZone": True, "pre_balls": 1, "pre_strikes": 1,
+         "hit_speed": "", "is_barrel": False, "isSword": True},
+        # Mid-count in-zone foul → in-zone swing WITH contact
+        {"description": "Foul", "isInZone": True, "pre_balls": 1, "pre_strikes": 2,
+         "hit_speed": "", "is_barrel": False},
+    ]
+    fake_resp = MagicMock()
+    fake_resp.raise_for_status.return_value = None
+    fake_resp.json.return_value = _make_savant_gf_response(554430, pitches)
+    monkeypatch.setattr("httpx.get", lambda *a, **kw: fake_resp)
+
+    conn = MlbStatsConnector()
+    result = conn.fetch_game_savant(822982, 554430)
+    assert result is not None
+    # CSW = (whiffs 1 + called strikes 1) / 4 pitches = 50%
+    assert result["csw_pct"] == 50
+    # First pitches: 2 (the two 0-0 pitches). Strikes among them: 1 (called strike).
+    assert result["f_strike_pct"] == 50
+    # In-zone swings: swinging strike + foul = 2. Contact among them: foul = 1.
+    assert result["zone_contact_pct"] == 50
+    assert result["swords"] == 1
 
 
 def test_fetch_game_savant_pitcher_not_in_game(monkeypatch):

@@ -75,7 +75,7 @@ For the opposing offense component, the Log5 method predicts the expected K% for
 E[K%] = (B × P) / (0.84 × B × P + 0.16)
 ```
 
-**B** = opposing team K% vs this pitcher's handedness (L or R), sourced from MLB Stats API batting splits. **P** = pitcher's season K% derived from strikeouts per 9 innings.
+**B** = opposing team K% vs this pitcher's handedness (L or R), sourced from MLB Stats API batting splits. **P** = pitcher's season K% (strikeouts ÷ batters faced, falling back to an estimate from strikeouts per 9 innings when batters-faced is unavailable).
 
 When pitcher K% is unavailable, falls back to opponent OPS vs handedness.
 

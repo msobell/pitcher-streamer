@@ -57,7 +57,7 @@
     .week-label { font-size: 13px; color: var(--text-muted); }
 
     /* Page content */
-    .page-content { padding: 1.25rem 2rem 2rem; }
+    .page-content { padding: 1.25rem 2rem 2rem; max-width: 1500px; margin: 0 auto; }
 
     h2 { margin: 1.5rem 0 0.5rem; font-size: 15px; font-weight: 600;
          color: var(--text); letter-spacing: -0.1px; }
@@ -141,6 +141,7 @@
     .breakdown .bd-explain { color: var(--text-muted); font-size: 11px; max-width: 280px; word-break: break-word; }
     .breakdown .bd-total { border-top: 1px solid var(--border); font-weight: bold; }
     .breakdown .bd-total td { padding-top: 5px; }
+    .breakdown .bd-total-note { color: #374151; }
     details > summary { list-style: none; }
     details > summary::-webkit-details-marker { display: none; }
 
@@ -173,9 +174,14 @@
     .game-decision.loss { color: #991b1b; }
     .game-stat { color: var(--text-muted); white-space: nowrap; }
     .game-fip  { color: var(--text-muted); font-size: 11px; }
-    .game-savant { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 3px;
-                   font-size: 11px; color: var(--text-muted); }
-    .game-savant span { white-space: nowrap; }
+    .game-savant { display: flex; gap: 5px; flex-wrap: wrap; margin-top: 5px;
+                   font-size: 11px; color: var(--text-muted); align-items: center; }
+    .game-savant span { white-space: nowrap; background: #eef1f4;
+                        padding: 1px 6px; border-radius: 3px; }
+    .game-savant .gs-divider { background: none; padding: 0; color: var(--border);
+                               user-select: none; }
+    .game-savant .gs-good { background: #dcfce7; color: #166534; }
+    .game-savant .gs-bad  { background: #fee2e2; color: #991b1b; }
     .game-score-badge { display: inline-block; padding: 1px 7px; border-radius: 4px;
                         font-weight: 700; font-size: 12px; margin-left: 4px; }
     .gs-great  { background: #dcfce7; color: #166534; }
@@ -260,7 +266,13 @@
       <span class="tier-unknown">?</span> no starter announced yet
     </div>
     <div class="key-section">
-      <strong>pk</strong> — MLB game ID; click the opponent name to open MLB Gameday for that game.
+      <strong>Past starts:</strong> click the score to see the game line plus
+      <span class="game-score-badge gs-ok" style="font-size:11px">GS</span>
+      Game Score — a process metric (ignores luck on balls in play) and Statcast quality stats
+      (CSW%, whiff, chase, hard-hit, barrels, swords).
+    </div>
+    <div class="key-section">
+      Click a pitcher's name for their Baseball Savant page · click the opponent name to open MLB Gameday.
     </div>
   </div>
 </details>
@@ -383,7 +395,7 @@
     <tr class="bd-total">
       <td class="bd-label">Total</td>
       <td class="bd-delta">{{ bd.total }}</td>
-      <td class="bd-explain" style="color:#444">≥60 strong · 45–59 ok · &lt;45 avoid</td>
+      <td class="bd-explain bd-total-note">≥60 strong · 45–59 ok · &lt;45 avoid</td>
     </tr>
   </table>
 </div>
@@ -421,15 +433,16 @@
           {%- if s.savant_stats %}
           {%- set sv = s.savant_stats %}
           <div class="game-savant">
-            {%- if sv.csw_pct is not none %}<span title="Called Strike + Whiff %">CSW {{ sv.csw_pct }}%</span>{%- endif %}
-            {%- if sv.whiff_pct is not none %}<span>Whiff {{ sv.whiff_pct }}%</span>{%- endif %}
-            {%- if sv.chase_pct is not none %}<span>Chase {{ sv.chase_pct }}%</span>{%- endif %}
+            {%- if sv.csw_pct is not none %}<span class="{{ 'gs-good' if sv.csw_pct >= 30 }}" title="Called Strike + Whiff % (≥30% is elite)">CSW {{ sv.csw_pct }}%</span>{%- endif %}
+            {%- if sv.whiff_pct is not none %}<span class="{{ 'gs-good' if sv.whiff_pct >= 25 }}" title="Whiffs per swing">Whiff {{ sv.whiff_pct }}%</span>{%- endif %}
+            {%- if sv.chase_pct is not none %}<span class="{{ 'gs-good' if sv.chase_pct >= 30 }}" title="Swings on pitches out of zone">Chase {{ sv.chase_pct }}%</span>{%- endif %}
             {%- if sv.f_strike_pct is not none %}<span title="First-pitch strike rate">F-Strike {{ sv.f_strike_pct }}%</span>{%- endif %}
-            {%- if sv.zone_contact_pct is not none %}<span title="Contact rate on pitches in zone">Zone-Con {{ sv.zone_contact_pct }}%</span>{%- endif %}
-            {%- if sv.hard_hit_pct is not none %}<span>Hard-hit {{ sv.hard_hit_pct }}%</span>{%- endif %}
+            {%- if sv.zone_contact_pct is not none %}<span title="Contact rate on pitches in zone (lower = more deceptive)">Zone-Con {{ sv.zone_contact_pct }}%</span>{%- endif %}
+            {%- if sv.swords %}<span title="Sword swings — batter completely fooled">⚔ {{ sv.swords }}</span>{%- endif %}
+            <span class="gs-divider">·</span>
+            {%- if sv.hard_hit_pct is not none %}<span class="{{ 'gs-bad' if sv.hard_hit_pct >= 40 }}" title="Batted balls ≥95 mph EV">Hard-hit {{ sv.hard_hit_pct }}%</span>{%- endif %}
             {%- if sv.avg_ev is not none %}<span>Avg EV {{ sv.avg_ev }}</span>{%- endif %}
-            {%- if sv.barrels is not none %}<span>Barrels {{ sv.barrels }}</span>{%- endif %}
-            {%- if sv.swords is not none and sv.swords > 0 %}<span title="Sword swings — batter completely fooled">⚔ {{ sv.swords }}</span>{%- endif %}
+            {%- if sv.barrels is not none %}<span class="{{ 'gs-bad' if sv.barrels >= 2 }}">Barrels {{ sv.barrels }}</span>{%- endif %}
             {%- if sv.avg_fb_velo is not none %}<span>FB {{ sv.avg_fb_velo }} mph</span>{%- endif %}
           </div>
           {%- endif %}

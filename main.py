@@ -7,9 +7,11 @@ first by running: python refresh_park_factors.py
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
+import re
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -17,16 +19,14 @@ from contextlib import asynccontextmanager
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
-import re
-
 import yaml
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 
-from connectors import MlbStatsConnector, YahooConnector
+from connectors import MlbStatsConnector, YahooConnector, _parse_ip
 from rotation import build_team_rotation, project_probable_pitchers
-from scoring import compute_matchup_score
+from scoring import compute_matchup_score, _calc_fip
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -145,7 +145,7 @@ def _compute_game_score(game_stats: dict, savant_stats: dict) -> int:
     https://razzball.com/starting-pitcher-chart-may-22nd-2026/ (custom variant,
     not the original Bill James or ESPN Game Score formulas).
     """
-    outs = int(_parse_ip_decimal(game_stats.get("ip", "0.0")) * 3)
+    outs = int(_parse_ip(game_stats.get("ip", "0.0")) * 3)
     k    = game_stats.get("k", 0)
     bb   = game_stats.get("bb", 0)
     barrels   = savant_stats.get("barrels", 0)
@@ -164,15 +164,6 @@ def _compute_game_score(game_stats: dict, savant_stats: dict) -> int:
     if chase_raw is not None and chase_raw > 0.30:
         score += 5
     return max(0, min(100, score))
-
-
-def _parse_ip_decimal(ip_str: str) -> float:
-    """Convert '5.1' (MLB innings notation) to decimal innings (5.333...)."""
-    try:
-        parts = str(ip_str).split(".")
-        return int(parts[0]) + (int(parts[1]) / 3 if len(parts) > 1 else 0)
-    except (ValueError, IndexError):
-        return 0.0
 
 
 def _savant_url(name: str, mlbam_id: "int | None") -> "str | None":
@@ -200,37 +191,6 @@ def _park_factor_for_team(park_factors: dict, home_team_name: str) -> float:
     return 100.0
 
 
-def _is_starter(pitcher: dict, mlb: MlbStatsConnector, week_start: date, week_end: date) -> bool:
-    """
-    Return True if this pitcher has a verified start within 5 days of today
-    (past or future). Uses game log for recent starts and the week schedule
-    for upcoming probable starts.
-
-    Ignores Yahoo position tags and roster slots entirely.
-    """
-    today = date.today()
-    mlbam_id = pitcher.get("mlbam_id")
-    if not mlbam_id:
-        return False
-
-    recent = mlb.fetch_pitcher_recent_starts(mlbam_id, _SEASON)
-    for rs in recent:
-        d = _days_since(rs["date"], today)
-        if 0 <= d <= 5:
-            return True
-
-    # Upcoming: check if they appear as a probable pitcher in the week schedule
-    # (handled via probable_pitcher_ids passed from the route)
-    # Fall back: if they have any start in the last 30 days, assume they're a starter
-    # and trust the schedule-based team filter to gate them.
-    for rs in recent:
-        d = _days_since(rs["date"], today)
-        if 0 <= d <= 30:
-            return True
-
-    return False
-
-
 def _score_pitcher_starts(
     pitcher: dict,
     starts: list[dict],
@@ -246,7 +206,6 @@ def _score_pitcher_starts(
     Score each of this pitcher's starts for the week.
     Returns annotated start dicts with score, breakdown, flags, and probable indicator.
     """
-    from scoring import _calc_fip
     today = date.today()
     mlbam_id = pitcher.get("mlbam_id")
 
@@ -261,11 +220,14 @@ def _score_pitcher_starts(
         season_stats.get("k", 0), season_stats.get("bb", 0),
         season_stats.get("hr", 0), season_stats.get("ip", 0.0),
     )
-    # Pitcher K% from season strikeouts per 9 → approximate K% (K/9 ÷ ~4.3 batters faced per inning)
+    # Pitcher K% — exact K/BF when batters-faced is available, else approximate
+    # from K/9 (÷ ~4.3 batters faced per inning).
     pitcher_k_pct: "float | None" = None
-    k_per_9 = season_stats.get("k_per_9", 0.0)
-    if k_per_9:
-        pitcher_k_pct = round(k_per_9 / 4.3 * 100 / 9, 1)
+    bf = season_stats.get("bf", 0)
+    if bf:
+        pitcher_k_pct = round(season_stats.get("k", 0) / bf * 100, 1)
+    elif season_stats.get("k_per_9"):
+        pitcher_k_pct = round(season_stats["k_per_9"] / 4.3 * 100 / 9, 1)
 
     # Recent FIP from last 20 starts in game log
     last_20 = sorted(recent_starts, key=lambda s: s["date"], reverse=True)[:20]
@@ -340,13 +302,15 @@ def _score_pitcher_starts(
             start_date = date.fromisoformat(game_date)
         except (ValueError, TypeError):
             start_date = today
-        days_since_faced = None
-        for rs in recent_starts:
-            if opponent_name and opponent_name.lower() in rs.get("opponent_name", "").lower():
-                d = _days_since(rs["date"], start_date)
-                if 1 <= d <= 9:
-                    days_since_faced = d
-                    break
+        days_since_faced = min(
+            (
+                d
+                for rs in recent_starts
+                if opponent_name and opponent_name.lower() in rs.get("opponent_name", "").lower()
+                and 1 <= (d := _days_since(rs["date"], start_date)) <= 9
+            ),
+            default=None,
+        )
 
         park_index = _park_factor_for_team(park_factors, home_team_name)
 
@@ -368,14 +332,15 @@ def _score_pitcher_starts(
         game_stats = None
         savant_stats = None
         if is_past and game_pk and mlbam_id:
-            game_stats = mlb.fetch_game_boxscore(game_pk, mlbam_id)
-            if game_stats:
-                from scoring import _calc_fip
-                game_fip = _calc_fip(
+            cached_box = mlb.fetch_game_boxscore(game_pk, mlbam_id)
+            if cached_box:
+                # Copy: the connector returns the shared cached dict, and we add
+                # derived fields (fip, game_score) that must not mutate the cache.
+                game_stats = dict(cached_box)
+                game_stats["fip"] = _calc_fip(
                     game_stats["k"], game_stats["bb"],
-                    game_stats["hr"], _parse_ip_decimal(game_stats["ip"]),
+                    game_stats["hr"], _parse_ip(game_stats["ip"]),
                 )
-                game_stats["fip"] = game_fip
             savant_stats = mlb.fetch_game_savant(game_pk, mlbam_id)
             if game_stats and savant_stats:
                 game_stats["game_score"] = _compute_game_score(game_stats, savant_stats)
@@ -664,8 +629,10 @@ def _build_pitcher_data(park_factors: dict, week_offset: int = 0) -> dict:
         )
     ]
 
+    today_iso = today.isoformat()
     opponent_handedness_pairs: set[tuple[int, str]] = set()
     weather_keys: set[tuple] = set()
+    past_start_keys: set[tuple[int, int]] = set()   # (game_pk, mlbam_id)
     for p in confirmed_candidates:
         team_id = p.get("team_id")
         handedness = p.get("throws", "R")
@@ -676,6 +643,8 @@ def _build_pitcher_data(park_factors: dict, week_offset: int = 0) -> dict:
                 opponent_handedness_pairs.add((opp_id, handedness))
             if s.get("venue_lat") and s.get("venue_lng") and s.get("game_datetime"):
                 weather_keys.add((round(s["venue_lat"], 3), round(s["venue_lng"], 3), s["date"], s["game_datetime"]))
+            if s.get("game_pk") and s.get("date", "") < today_iso:
+                past_start_keys.add((s["game_pk"], p["mlbam_id"]))
 
     # Batting splits — parallel, MLB API has no concurrency limit
     with ThreadPoolExecutor(max_workers=min(max(len(opponent_handedness_pairs), 1), 20)) as ex:
@@ -701,6 +670,28 @@ def _build_pitcher_data(park_factors: dict, week_offset: int = 0) -> dict:
             weather_cache[cache_key] = mlb.fetch_weather_forecast(lat, lng, gdt)
         except Exception:
             weather_cache[cache_key] = None
+
+    # Boxscore + Savant data for completed starts — prefetched in parallel here
+    # so the scoring loop (which fetches them serially on cache miss) hits the
+    # connector's TTL cache instead. Results are discarded; caching is the point.
+    # Savant fetches share a per-game raw payload (multi-MB); two pitchers in the
+    # same game would race that download, so we run only the first Savant fetch
+    # per game_pk in the pool and let the scoring loop reuse the cached payload.
+    if past_start_keys:
+        savant_seen: set[int] = set()
+        savant_keys: list[tuple[int, int]] = []
+        for pk, mid in past_start_keys:
+            if pk not in savant_seen:
+                savant_seen.add(pk)
+                savant_keys.append((pk, mid))
+        with ThreadPoolExecutor(max_workers=10) as ex:
+            futs = [ex.submit(mlb.fetch_game_boxscore, pk, mid) for pk, mid in past_start_keys]
+            futs += [ex.submit(mlb.fetch_game_savant, pk, mid) for pk, mid in savant_keys]
+            for fut in as_completed(futs):
+                try:
+                    fut.result()
+                except Exception:
+                    pass
 
     # Phase 5: project unconfirmed starters via rotation math — 2t1/aai
     # Build a rotation per team from the candidates who passed the starter gate,
@@ -822,6 +813,31 @@ def _build_pitcher_data(park_factors: dict, week_offset: int = 0) -> dict:
 
 _REFRESH_INTERVAL_SECONDS = 2 * 60 * 60  # 2 hours
 
+# One lock per week offset: cold-start page polls (every 3s) and the background
+# refresh thread can all trigger builds — without this guard they pile up into
+# dozens of concurrent 15–30s builds that hammer the external APIs.
+_build_locks: dict[int, threading.Lock] = {0: threading.Lock(), 1: threading.Lock()}
+
+
+def _build_and_cache(app_ref, offset: int) -> bool:
+    """
+    Build pitcher data for one week offset and store it in the app cache.
+    Returns False (without building) if a build for this offset is already
+    in flight on another thread.
+    """
+    lock = _build_locks[offset]
+    if not lock.acquire(blocking=False):
+        logger.info("Build already in flight for week_offset=%d — skipping", offset)
+        return False
+    try:
+        data = _build_pitcher_data(app_ref.state.park_factors, offset)
+        app_ref.state.pitcher_cache[offset] = data
+        logger.info("Build done: offset=%d roster=%d waiver=%d",
+                    offset, len(data["roster_pitchers"]), len(data["waiver_pitchers"]))
+        return True
+    finally:
+        lock.release()
+
 
 def _background_refresh(app_ref) -> None:
     """
@@ -831,10 +847,7 @@ def _background_refresh(app_ref) -> None:
         for offset in (0, 1):
             try:
                 logger.info("Background refresh: week_offset=%d", offset)
-                data = _build_pitcher_data(app_ref.state.park_factors, offset)
-                app_ref.state.pitcher_cache[offset] = data
-                logger.info("Background refresh done: offset=%d roster=%d waiver=%d",
-                            offset, len(data["roster_pitchers"]), len(data["waiver_pitchers"]))
+                _build_and_cache(app_ref, offset)
             except Exception:
                 logger.exception("Background refresh failed: week_offset=%d", offset)
         time.sleep(_REFRESH_INTERVAL_SECONDS)
@@ -893,28 +906,18 @@ body{{margin:0;font-family:system-ui,-apple-system,sans-serif;font-size:14px;bac
 
 @app.get("/")
 async def index(request: Request, week: int = 0):
-    import asyncio
-
     app_state = request.app.state
     week_offset = max(0, min(week, 1))
 
-    cache = getattr(app_state, "pitcher_cache", {})
-    data = cache.get(week_offset)
-
+    data = getattr(app_state, "pitcher_cache", {}).get(week_offset)
     if data is not None:
-        # Cache hit — render immediately, no streaming needed
         return HTMLResponse(_render_index(request, data, week_offset))
 
-    # Cold start — return the loading shell immediately, populate the cache in
-    # the background, then redirect. The redirect hits a cache hit and renders instantly.
+    # Cold start — return the loading shell immediately and build in a worker
+    # thread. The shell polls every 3s; the per-offset lock inside
+    # _build_and_cache makes repeated polls no-ops while the build runs.
     logger.info("Cold start: fetching week_offset=%d (async)", week_offset)
-
-    async def _fetch_and_cache():
-        loop = asyncio.get_event_loop()
-        result = await loop.run_in_executor(
-            None, _build_pitcher_data, app_state.park_factors, week_offset
-        )
-        app_state.pitcher_cache[week_offset] = result
-
-    asyncio.create_task(_fetch_and_cache())
+    asyncio.get_running_loop().run_in_executor(
+        None, _build_and_cache, request.app, week_offset
+    )
     return HTMLResponse(_loading_shell(week_offset))
