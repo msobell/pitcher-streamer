@@ -185,10 +185,14 @@ Fill in `consumer_key` and `consumer_secret` from your Yahoo app credentials, th
 ### 7. Run
 
 ```bash
-uvicorn main:app --reload --port 8001
+pitcher-streamer serve
 ```
 
 Open [http://localhost:8001](http://localhost:8001).
+
+`serve` checks that `config.yaml` and `park_factors.json` exist and that the port is free before launching, so a second run fails loudly instead of silently colliding. Options: `--port`, `--host` (use `0.0.0.0` to expose on your LAN), `--reload` (auto-reload on code changes for development).
+
+Equivalent raw command if you prefer: `uvicorn main:app --port 8001`.
 
 Data is fetched fresh on first load, then refreshed in the background every 2 hours. API responses are cached in-process (30 min for schedule/weather, up to 6 hours for splits and game logs) to avoid redundant calls during refresh.
 
@@ -196,6 +200,7 @@ Data is fetched fresh on first load, then refreshed in the background every 2 ho
 
 | File | Purpose |
 |------|---------|
+| `cli.py` | `pitcher-streamer` CLI entry point (`serve` command) |
 | `main.py` | FastAPI app, route logic, parallel data pipeline, background refresh |
 | `connectors.py` | Yahoo Fantasy and MLB Stats API connectors, in-process TTL cache |
 | `scoring.py` | `compute_matchup_score()` — Stream-o-Nator weights + Log5 K% + z-score normalization |

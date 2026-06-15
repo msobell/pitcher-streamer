@@ -377,6 +377,19 @@ def test_breakdown_baseline_shown(client):
     assert "Baseline" in text or "IP" in text
 
 
+def test_past_start_renders_when_savant_unavailable(tmp_path):
+    # Boxscore present but Savant returns None (failed fetch). The page must
+    # still render — game_score is absent, so the GS badge is skipped.
+    mock_mlb = _make_mock_mlb()
+    mock_mlb.fetch_game_savant.return_value = None
+    mock_yahoo = _make_mock_yahoo(fa=[])
+    for c in _make_client(tmp_path, mock_yahoo, mock_mlb):
+        resp = c.get("/")
+        assert resp.status_code == 200
+        # Game line still shown (IP), but no Game Score badge
+        assert "GS " not in resp.text
+
+
 def test_rain_flag_rendered_when_rain_high(tmp_path):
     rainy_schedule = [{**FAKE_SCHEDULE[0], "weather_temp": None}]
     mock_mlb = _make_mock_mlb(

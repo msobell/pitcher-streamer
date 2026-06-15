@@ -341,9 +341,11 @@ def _score_pitcher_starts(
                     game_stats["k"], game_stats["bb"],
                     game_stats["hr"], _parse_ip(game_stats["ip"]),
                 )
-            savant_stats = mlb.fetch_game_savant(game_pk, mlbam_id)
-            if game_stats and savant_stats:
-                game_stats["game_score"] = _compute_game_score(game_stats, savant_stats)
+                savant_stats = mlb.fetch_game_savant(game_pk, mlbam_id)
+                # game_score requires Savant contact data; None when unavailable.
+                game_stats["game_score"] = (
+                    _compute_game_score(game_stats, savant_stats) if savant_stats else None
+                )
 
         opp_abbr = start.get("opp_abbr", "")
         opp_woba = team_woba.get(opp_abbr) if team_woba and opp_abbr else None
@@ -889,13 +891,13 @@ def _loading_shell(week_offset: int) -> str:
 <title>Pitcher Streamer — Loading…</title>
 <style>
 *{{box-sizing:border-box}}
-body{{margin:0;font-family:system-ui,-apple-system,sans-serif;font-size:14px;background:#f4f5f7;color:#1a1d23}}
-#loading-bar{{position:fixed;top:0;left:0;height:3px;width:0;background:linear-gradient(90deg,#1a6b3c,#4fc3f7);z-index:9999;animation:lg 60s cubic-bezier(0.05,0.3,0.3,1) forwards}}
+body{{margin:0;min-height:100vh;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;font-size:14px;color:#e9edf5;background:#0a0c13;background-image:radial-gradient(1100px 520px at 85% -10%,rgba(52,211,153,0.10),transparent 60%),radial-gradient(900px 480px at -10% 110%,rgba(34,211,238,0.06),transparent 60%);background-attachment:fixed}}
+#loading-bar{{position:fixed;top:0;left:0;height:3px;width:0;background:linear-gradient(135deg,#34d399,#22d3ee);z-index:9999;animation:lg 60s cubic-bezier(0.05,0.3,0.3,1) forwards}}
 @keyframes lg{{0%{{width:0}}20%{{width:25%}}50%{{width:50%}}80%{{width:72%}}100%{{width:88%}}}}
-.site-header{{background:#fff;border-bottom:1px solid #e2e5e9;padding:0.75rem 2rem;display:flex;align-items:center;gap:1.5rem;box-shadow:0 1px 3px rgba(0,0,0,.06)}}
-.site-header h1{{margin:0;font-size:18px;font-weight:700;color:#1a6b3c}}
-.site-header h1 span{{color:#6b7280;font-weight:400;font-size:14px;margin-left:6px}}
-.loading-msg{{padding:2rem;color:#6b7280;font-size:13px}}
+.site-header{{background:rgba(10,12,19,0.72);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);border-bottom:1px solid rgba(148,163,184,0.13);padding:0.75rem 2rem;display:flex;align-items:center;gap:1.5rem}}
+.site-header h1{{margin:0;font-size:18px;font-weight:700;background:linear-gradient(135deg,#34d399,#22d3ee);-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent}}
+.site-header h1 span{{color:#8b94a9;font-weight:400;font-size:14px;margin-left:6px;-webkit-text-fill-color:#8b94a9}}
+.loading-msg{{padding:2rem;color:#8b94a9;font-size:13px}}
 </style></head><body>
 <div id="loading-bar"></div>
 <header class="site-header"><h1>Pitcher Streamer <span>fantasy baseball</span></h1></header>
