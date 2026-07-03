@@ -132,3 +132,24 @@ def test_get_free_agents_exception_returns_empty(connector, mock_league):
     connector._league = mock_league
     result = connector.get_free_agents("SP")
     assert result == []
+
+
+def test_find_my_team_key_raises_when_configured_name_not_found(connector):
+    teams = {
+        "101.l.9999.t.1": {"name": "Someone Else"},
+        "101.l.9999.t.2": {"name": "Another Manager"},
+    }
+    with pytest.raises(RuntimeError, match="Test Team"):
+        connector._find_my_team_key(teams)
+
+
+def test_find_my_team_key_falls_back_when_name_unset(tmp_path):
+    connector = YahooConnector(
+        client_id="fake_id",
+        client_secret="fake_secret",
+        league_id=9999,
+        my_team_name="",
+        oauth_cache_path=tmp_path / "oauth2.json",
+    )
+    teams = {"101.l.9999.t.7": {"name": "Whoever"}}
+    assert connector._find_my_team_key(teams) == "101.l.9999.t.7"

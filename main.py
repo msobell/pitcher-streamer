@@ -184,10 +184,23 @@ def _days_since(game_date_str: str, reference: date) -> int:
         return 999
 
 
+# park_factors.json keys are Baseball Savant club nicknames; these don't all
+# substring-match the MLB Stats API full team name (e.g. "D-backs" vs
+# "Arizona Diamondbacks").
+_PARK_KEY_ALIASES = {"d-backs": "diamondbacks"}
+
+
 def _park_factor_for_team(park_factors: dict, home_team_name: str) -> float:
+    home_lower = home_team_name.lower()
     for key, pf in park_factors.items():
-        if key.lower() in home_team_name.lower() or home_team_name.lower() in key.lower():
+        key_lower = _PARK_KEY_ALIASES.get(key.lower(), key.lower())
+        if key_lower in home_lower or home_lower in key_lower:
             return float(pf.get("index_runs", 100))
+    logger.warning(
+        "No park factor entry matches home team %r — using neutral 100. "
+        "Check park_factors.json keys (run refresh_park_factors.py?).",
+        home_team_name,
+    )
     return 100.0
 
 
@@ -837,6 +850,12 @@ def _build_and_cache(app_ref, offset: int) -> bool:
         logger.info("Build done: offset=%d roster=%d waiver=%d",
                     offset, len(data["roster_pitchers"]), len(data["waiver_pitchers"]))
         return True
+    except Exception:
+        # The cold-start path fires this via run_in_executor and drops the
+        # future, so an unlogged exception would vanish and the loading page
+        # would poll forever with no trace of why.
+        logger.exception("Build failed: week_offset=%d", offset)
+        return False
     finally:
         lock.release()
 

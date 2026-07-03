@@ -4,7 +4,10 @@
 *.db
 .beads-credential-key
 .beads*
-.claude*
+# Ignore .claude settings but track project skills (a parent dir excluded by
+# .claude* could not be re-included, hence the /* + negation form).
+.claude/*
+!.claude/skills/
 PLAN.md
 
 # App-specific

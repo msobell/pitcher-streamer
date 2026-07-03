@@ -88,11 +88,18 @@ def _compute_next_start_with_offdays(
     where the team has no game, add one extra day to the projection.
     """
     baseline = last_start + timedelta(days=_ROTATION_REST_DAYS + 1)
-    # Count off-days between last_start (exclusive) and baseline (exclusive)
+    if not team_game_dates:
+        return baseline
+    # Count off-days between last_start (exclusive) and baseline (exclusive).
+    # team_game_dates only covers the viewed week, while last_start is often in
+    # the prior week — days outside the known window are unknown, not off-days,
+    # so only days within [min, max] of the schedule window can count.
+    window_start = min(team_game_dates)
+    window_end = max(team_game_dates)
     off_days = 0
     check = last_start + timedelta(days=1)
     while check < baseline:
-        if check not in team_game_dates:
+        if window_start <= check <= window_end and check not in team_game_dates:
             off_days += 1
         check += timedelta(days=1)
     return baseline + timedelta(days=off_days)

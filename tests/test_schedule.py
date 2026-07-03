@@ -288,18 +288,53 @@ def test_resolve_player_mlbam_id_returns_none_on_error():
 # --- fetch_recent_transactions ---
 
 def test_fetch_recent_transactions_returns_unavailable_ids():
+    # Real API shapes: IL moves arrive as typeCode SC with the direction only
+    # in the description; optioned = OPT, DFA = DES, recalled = CU.
     payload = {
         "transactions": [
-            {"typeCode": "IL10", "person": {"id": 554430, "fullName": "Zack Wheeler"}},
-            {"typeCode": "OPTION", "person": {"id": 622663, "fullName": "Framber Valdez"}},
-            {"typeCode": "TRADE", "person": {"id": 543037, "fullName": "Gerrit Cole"}},  # not unavailable
+            {"typeCode": "SC", "date": "2026-06-28",
+             "description": "Philadelphia Phillies placed RHP Zack Wheeler on the 15-day injured list.",
+             "person": {"id": 554430, "fullName": "Zack Wheeler"}},
+            {"typeCode": "OPT", "date": "2026-06-28",
+             "description": "Houston Astros optioned LHP Framber Valdez to Sugar Land Space Cowboys.",
+             "person": {"id": 622663, "fullName": "Framber Valdez"}},
+            {"typeCode": "DES", "date": "2026-06-29",
+             "description": "New York Mets designated RHP Adrian Houser for assignment.",
+             "person": {"id": 605288, "fullName": "Adrian Houser"}},
+            {"typeCode": "SC", "date": "2026-06-29",
+             "description": "Detroit Tigers transferred RHP Jackson Jobe from the 15-day injured list to the 60-day injured list.",
+             "person": {"id": 693433, "fullName": "Jackson Jobe"}},
+            {"typeCode": "TR", "date": "2026-06-30",
+             "description": "New York Yankees traded RHP Gerrit Cole.",
+             "person": {"id": 543037, "fullName": "Gerrit Cole"}},  # not unavailable
         ]
     }
     conn = MlbStatsConnector(http_client=_mock_http(payload))
     result = conn.fetch_recent_transactions()
-    assert 554430 in result
-    assert 622663 in result
-    assert 543037 not in result
+    assert result == {554430, 622663, 605288, 693433}
+
+
+def test_fetch_recent_transactions_activation_clears_earlier_placement():
+    # Placed on the IL, then activated within the window → available again.
+    # Listed out of order to verify chronological processing.
+    payload = {
+        "transactions": [
+            {"typeCode": "SC", "date": "2026-06-30",
+             "description": "Chicago Cubs activated LHP Matthew Boyd from the 15-day injured list.",
+             "person": {"id": 571510, "fullName": "Matthew Boyd"}},
+            {"typeCode": "SC", "date": "2026-06-24",
+             "description": "Chicago Cubs placed LHP Matthew Boyd on the 15-day injured list.",
+             "person": {"id": 571510, "fullName": "Matthew Boyd"}},
+            {"typeCode": "CU", "date": "2026-06-29",
+             "description": "Milwaukee Brewers recalled RHP Logan Henderson.",
+             "person": {"id": 694297, "fullName": "Logan Henderson"}},
+            {"typeCode": "OPT", "date": "2026-06-25",
+             "description": "Milwaukee Brewers optioned RHP Logan Henderson to Nashville Sounds.",
+             "person": {"id": 694297, "fullName": "Logan Henderson"}},
+        ]
+    }
+    conn = MlbStatsConnector(http_client=_mock_http(payload))
+    assert conn.fetch_recent_transactions() == set()
 
 
 def test_fetch_recent_transactions_returns_empty_on_error():

@@ -375,10 +375,16 @@ class MlbStatsConnector:
 
     def fetch_recent_transactions(self, days_back: int = 7) -> set[int]:
         """
-        Fetch recent MLB transactions and return the set of player IDs who were
-        placed on IL, optioned to minors, or designated for assignment.
-        Used to invalidate PROJECTED starters who are likely unavailable.
-        Returns empty set on failure.
+        Fetch recent MLB transactions and return the set of player IDs who are
+        likely unavailable: placed on a list (injured/restricted/paternity/
+        bereavement), optioned to the minors, or designated for assignment.
+        A later activation/recall within the window makes the player available
+        again. Used to invalidate PROJECTED starters. Returns empty set on failure.
+
+        typeCodes (verified against /v1/transactions): IL and other list moves
+        arrive as SC "Status Change" — only the description distinguishes
+        "placed on"/"transferred to" from "activated from". Optioned = OPT,
+        recalled = CU, designated for assignment = DES.
         """
         key = ("transactions", days_back, date.today().isoformat())
         hit = _cache.get(key)
@@ -386,7 +392,6 @@ class MlbStatsConnector:
             return hit
         end_date = date.today()
         start_date = end_date - timedelta(days=days_back)
-        unavailable_codes = {"IL", "IL60", "IL7", "IL10", "IL15", "BRV", "DFA", "OPTION", "REST"}
         try:
             resp = self._http.get(
                 f"{_BASE_URL}/transactions",
@@ -399,12 +404,23 @@ class MlbStatsConnector:
             resp.raise_for_status()
             transactions = resp.json().get("transactions", [])
             unavailable_ids: set[int] = set()
-            for txn in transactions:
+            # Chronological order so a placement followed by an activation
+            # nets out to available.
+            for txn in sorted(transactions, key=lambda t: t.get("date", "")):
+                pid = txn.get("person", {}).get("id")
+                if not pid:
+                    continue
                 type_code = txn.get("typeCode", "")
-                if any(type_code.startswith(code) for code in unavailable_codes):
-                    person = txn.get("person", {})
-                    if pid := person.get("id"):
+                desc = txn.get("description", "").lower()
+                if type_code in ("OPT", "DES"):
+                    unavailable_ids.add(pid)
+                elif type_code == "CU":  # recalled from minors
+                    unavailable_ids.discard(pid)
+                elif type_code == "SC":
+                    if "placed" in desc or "transferred" in desc:
                         unavailable_ids.add(pid)
+                    elif "activated" in desc:
+                        unavailable_ids.discard(pid)
             _cache.set(key, unavailable_ids, _TTL_TRANSACTIONS)
             return unavailable_ids
         except Exception:
@@ -933,6 +949,12 @@ class YahooConnector:
             for key, info in teams.items():
                 if info.get("name", "").lower() == self._my_team_name.lower():
                     return key
+            # A configured name that matches nothing is a config error — falling
+            # back silently would show another manager's roster as "My Roster".
+            raise RuntimeError(
+                f"Team {self._my_team_name!r} not found in league. "
+                f"Available teams: {[info.get('name', '') for info in teams.values()]}"
+            )
         return next(iter(teams))
 
     @staticmethod

@@ -156,6 +156,28 @@ def test_project_probable_pitchers_empty_rotation():
     assert result == {}
 
 
+def test_project_probable_pitchers_ignores_days_before_schedule_window():
+    # Pitcher last started the Friday BEFORE the viewed week. week_games only
+    # covers Mon–Sun, so Sat/Sun are unknown — they must not count as off-days.
+    # Projected next start = last_start + 5 = Wednesday, not later.
+    monday = date(2026, 6, 15)
+    last_start = date(2026, 6, 12)  # Friday before the window
+    games = [
+        {"game_pk": 900 + i, "date": (monday + timedelta(days=i)).isoformat(),
+         "is_probable": False}
+        for i in range(7)  # team plays every day Mon–Sun
+    ]
+    rotation = [
+        {"pitcher_id": 1, "name": "Ace", "last_start": last_start.isoformat(), "slot": 1,
+         "next_eligible": (last_start + timedelta(days=5)).isoformat()},
+    ]
+    result = project_probable_pitchers(143, games, rotation, confirmed_probable_ids=set(),
+                                       as_of_date=monday)
+    wednesday_pk = 902  # monday + 2 = last_start + 5
+    assert wednesday_pk in result
+    assert result[wednesday_pk]["pitcher_id"] == 1
+
+
 def test_project_probable_pitchers_offday_shifts_projection():
     # Pitcher started 5 days ago, but the team had an off-day 2 days ago.
     # Projection should shift by 1 day (today+1).

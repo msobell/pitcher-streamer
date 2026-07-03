@@ -412,6 +412,22 @@ def test_familiarity_flag_rendered(tmp_path):
         assert "⚠" in c.get("/").text
 
 
+def test_park_factor_matches_dbacks_alias():
+    # Savant's club nickname "D-backs" shares no substring with the MLB API
+    # name "Arizona Diamondbacks" — the alias map must bridge it.
+    import main as main_module
+
+    pf = {"D-backs": {"index_runs": 106}, "Phillies": {"index_runs": 98}}
+    assert main_module._park_factor_for_team(pf, "Arizona Diamondbacks") == 106.0
+
+
+def test_park_factor_unmatched_team_defaults_to_neutral():
+    import main as main_module
+
+    pf = {"Phillies": {"index_runs": 98}}
+    assert main_module._park_factor_for_team(pf, "Athletics") == 100.0
+
+
 def test_startup_fails_on_missing_park_factors(tmp_path):
     import asyncio
     import main as main_module
