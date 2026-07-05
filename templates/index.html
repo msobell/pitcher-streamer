@@ -3,7 +3,9 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="color-scheme" content="dark">
   <title>Pitcher Streamer</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%E2%9A%BE%3C/text%3E%3C/svg%3E">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -84,10 +86,13 @@
     /* Page content */
     .page-content { padding: 1.25rem 2rem 2rem; max-width: 1500px; margin: 0 auto; }
 
-    h2 { margin: 1.5rem 0 0.6rem; font-size: 15px; font-weight: 600;
+    h2 { margin: 1.75rem 0 0.6rem; font-size: 15px; font-weight: 600;
          color: var(--text); letter-spacing: -0.1px;
          display: flex; align-items: center; gap: 8px; }
     h2::before { content: ""; width: 4px; height: 14px; border-radius: 2px; background: var(--grad); }
+    h2 .count-badge { font-size: 11px; font-weight: 600; color: var(--text-muted);
+                      background: var(--surface-2); border: 1px solid var(--border);
+                      padding: 1px 8px; border-radius: 999px; }
 
     /* Tables */
     table { border-collapse: collapse; width: 100%;
@@ -99,21 +104,30 @@
          text-transform: uppercase; }
     td { padding: 8px 12px; border-bottom: 1px solid var(--border); vertical-align: top; }
     tbody tr:last-child td { border-bottom: none; }
-    tbody tr:hover { background: rgba(148,163,184,0.05); }
+    /* Row hover — main tables only, not rows of nested breakdown tables */
+    #roster-table > tbody > tr:hover, #waiver-table > tbody > tr:hover { background: rgba(148,163,184,0.05); }
     tr.two-starts { background: var(--two-start-bg); box-shadow: inset 3px 0 0 var(--two-start-border); }
     tr.two-starts:hover { background: rgba(52, 211, 153, 0.13); }
     tr.one-start  { background: var(--one-start-bg); }
     tr.one-start:hover { background: rgba(251, 191, 36, 0.12); }
     tr.zero-starts { color: var(--text-muted); }
 
-    /* Start cells */
+    /* Start cells — badge + meta on one line; the expanded panel is a SIBLING
+       of the <details> toggle (shown via [open] ~), so it takes the full cell
+       width below the line instead of blowing out the badge column. */
     .starts-list { display: flex; flex-direction: column; gap: 5px; }
-    .start-cell { font-size: 12px; display: flex; align-items: flex-start; gap: 6px; }
+    .start-cell { font-size: 12px; display: flex; align-items: flex-start; gap: 6px; flex-wrap: wrap; }
     .start-meta { white-space: nowrap; line-height: 1.8; }
-    .start-score-col { flex-shrink: 0; }
+    .start-cell > .breakdown { display: none; width: 100%; }
+    .start-cell > details[open] ~ .breakdown { display: block; }
+    .start-cell.past .start-meta { opacity: 0.6; }
     .start-summary { display: inline-flex; align-items: center; gap: 4px; cursor: pointer; user-select: none; }
     .start-summary:hover .score-badge { opacity: 0.75; }
     .start-summary .score-badge { text-decoration: underline dotted; }
+    /* Secondary info chips on the start line (temp, wOBA/OPS) */
+    .meta-chip { display: inline-block; background: rgba(148,163,184,0.1); color: var(--text-muted);
+                 font-size: 11px; padding: 0 6px; border-radius: 4px; margin-left: 4px;
+                 line-height: 1.6; vertical-align: 1px; }
 
     /* Confidence tiers */
     .start-cell.confirmed .start-summary { font-weight: 600; }
@@ -149,15 +163,18 @@
     .starts-popup-reason { color: var(--text-muted); font-size: 11px; }
     details.starts-toggle > summary { list-style: none; cursor: pointer; }
     details.starts-toggle > summary::-webkit-details-marker { display: none; }
-    .starts-count-link { font-weight: 600; text-decoration: underline dotted; cursor: pointer;
-                         text-underline-offset: 2px; }
-    .starts-count-link:hover { opacity: 0.7; }
+    .starts-count-link { display: inline-block; min-width: 26px; text-align: center;
+                         font-weight: 600; cursor: pointer; padding: 1px 7px;
+                         border: 1px solid var(--border-strong); border-radius: 999px; }
+    .starts-count-link:hover { border-color: var(--accent); color: var(--accent); }
+    tr.two-starts .starts-count-link { border-color: var(--two-start-border); color: #6ee7b7; }
 
     /* Score breakdown panel */
     .breakdown { display: none; margin-top: 5px; padding: 8px 12px;
                  background: var(--surface-2); border: 1px solid var(--border);
-                 border-radius: 7px; font-size: 12px; line-height: 1.7; }
-    details[open] .breakdown { display: block; }
+                 border-left: 2px solid rgba(52, 211, 153, 0.35);
+                 border-radius: 7px; font-size: 12px; line-height: 1.7;
+                 max-width: 720px; }
     .breakdown table { background: none; box-shadow: none; font-size: 12px;
                        width: auto; border-collapse: collapse; border-radius: 0; }
     .breakdown td { padding: 2px 10px 2px 0; border: none; vertical-align: top; }
@@ -166,7 +183,7 @@
     .breakdown .bd-delta.pos { color: var(--pos); }
     .breakdown .bd-delta.neg { color: var(--neg); }
     .breakdown .bd-delta.zero { color: var(--text-muted); }
-    .breakdown .bd-explain { color: var(--text-muted); font-size: 11px; max-width: 280px; word-break: break-word; }
+    .breakdown .bd-explain { color: var(--text-muted); font-size: 11px; max-width: 460px; word-break: break-word; }
     .breakdown .bd-total { border-top: 1px solid var(--border); font-weight: bold; }
     .breakdown .bd-total td { padding-top: 5px; }
     .breakdown .bd-total-note { color: var(--text); }
@@ -215,35 +232,38 @@
                         font-weight: 700; font-size: 12px; margin-left: 4px; }
 
     /* K%-BB%, ERA, WHIP stat cells */
-    .k-minus-bb, .era-whip { font-variant-numeric: tabular-nums; white-space: nowrap; font-size: 13px; }
+    td { font-variant-numeric: tabular-nums; }
+    .k-minus-bb, .era-whip { white-space: nowrap; font-size: 13px; }
     .era-whip { color: var(--text-muted); }
     .era-whip .slash { color: var(--border); margin: 0 2px; }
-    /* Opp wOBA/OPS in start-meta */
-    .opp-ops { color: var(--text-muted); font-size: 11px; margin-left: 4px; }
 
-    /* Narrow columns: fixed width so they don't grow. Schedule column gets the rest. */
-    #roster-table th:nth-child(1), #roster-table td:nth-child(1) { white-space: nowrap; }
-    #roster-table th:nth-child(2), #roster-table td:nth-child(2) { width: 52px;  white-space: nowrap; }
-    #roster-table th:nth-child(3), #roster-table td:nth-child(3) { width: 60px;  white-space: nowrap; }
-    #roster-table th:nth-child(4), #roster-table td:nth-child(4) { width: 80px;  white-space: nowrap; }
-    #roster-table th:nth-child(5), #roster-table td:nth-child(5) { width: 54px;  white-space: nowrap; }
-    #roster-table th:nth-child(6), #roster-table td:nth-child(6) { width: 54px;  white-space: nowrap; }
-    #roster-table th:last-child,   #roster-table td:last-child   { width: 99%; }
+    /* Narrow columns: fixed width so they don't grow. Schedule column gets the rest.
+       Numeric columns are right-aligned; the Starts expander is centered.
+       Direct-child selectors only — the schedule cell nests breakdown tables
+       whose cells must NOT inherit these widths/nowraps. */
+    #roster-table > * > tr > th:nth-child(1), #roster-table > * > tr > td:nth-child(1) { white-space: nowrap; }
+    #roster-table > * > tr > th:nth-child(2), #roster-table > * > tr > td:nth-child(2) { width: 52px;  white-space: nowrap; }
+    #roster-table > * > tr > th:nth-child(3), #roster-table > * > tr > td:nth-child(3) { width: 60px;  white-space: nowrap; text-align: center; }
+    #roster-table > * > tr > th:nth-child(4), #roster-table > * > tr > td:nth-child(4) { width: 80px;  white-space: nowrap; text-align: right; }
+    #roster-table > * > tr > th:nth-child(5), #roster-table > * > tr > td:nth-child(5) { width: 54px;  white-space: nowrap; text-align: right; }
+    #roster-table > * > tr > th:nth-child(6), #roster-table > * > tr > td:nth-child(6) { width: 54px;  white-space: nowrap; text-align: right; }
+    #roster-table > * > tr > th:last-child,   #roster-table > * > tr > td:last-child   { width: 99%; padding-left: 20px; text-align: left; }
 
-    #waiver-table th:nth-child(1), #waiver-table td:nth-child(1) { white-space: nowrap; }
-    #waiver-table th:nth-child(2), #waiver-table td:nth-child(2) { width: 52px;  white-space: nowrap; }
-    #waiver-table th:nth-child(3), #waiver-table td:nth-child(3) { width: 60px;  white-space: nowrap; }
-    #waiver-table th:nth-child(4), #waiver-table td:nth-child(4) { width: 58px;  white-space: nowrap; }
-    #waiver-table th:nth-child(5), #waiver-table td:nth-child(5) { width: 80px;  white-space: nowrap; }
-    #waiver-table th:nth-child(6), #waiver-table td:nth-child(6) { width: 54px;  white-space: nowrap; }
-    #waiver-table th:nth-child(7), #waiver-table td:nth-child(7) { width: 54px;  white-space: nowrap; }
-    #waiver-table th:nth-child(8), #waiver-table td:nth-child(8) { width: 68px;  white-space: nowrap; }
-    #waiver-table th:last-child,   #waiver-table td:last-child   { width: 99%; }
+    #waiver-table > * > tr > th:nth-child(1), #waiver-table > * > tr > td:nth-child(1) { white-space: nowrap; }
+    #waiver-table > * > tr > th:nth-child(2), #waiver-table > * > tr > td:nth-child(2) { width: 52px;  white-space: nowrap; }
+    #waiver-table > * > tr > th:nth-child(3), #waiver-table > * > tr > td:nth-child(3) { width: 60px;  white-space: nowrap; text-align: center; }
+    #waiver-table > * > tr > th:nth-child(4), #waiver-table > * > tr > td:nth-child(4) { width: 58px;  white-space: nowrap; text-align: right; }
+    #waiver-table > * > tr > th:nth-child(5), #waiver-table > * > tr > td:nth-child(5) { width: 80px;  white-space: nowrap; text-align: right; }
+    #waiver-table > * > tr > th:nth-child(6), #waiver-table > * > tr > td:nth-child(6) { width: 54px;  white-space: nowrap; text-align: right; }
+    #waiver-table > * > tr > th:nth-child(7), #waiver-table > * > tr > td:nth-child(7) { width: 54px;  white-space: nowrap; text-align: right; }
+    #waiver-table > * > tr > th:nth-child(8), #waiver-table > * > tr > td:nth-child(8) { width: 68px;  white-space: nowrap; text-align: right; }
+    #waiver-table > * > tr > th:last-child,   #waiver-table > * > tr > td:last-child   { width: 99%; padding-left: 20px; text-align: left; }
 
-    /* Sortable columns */
+    /* Sortable columns — idle glyphs stay hidden until hover; active sort persists */
     th[data-col] { cursor: pointer; user-select: none; white-space: nowrap; }
     th[data-col]:hover { background: var(--surface-2); color: var(--text); }
-    th[data-col]::after { content: ' ⇅'; opacity: 0.35; font-size: 10px; }
+    th[data-col]::after { content: ' ⇅'; opacity: 0; font-size: 10px; transition: opacity 0.12s; }
+    th[data-col]:hover::after { opacity: 0.5; }
     th[data-col].asc::after { content: ' ↑'; opacity: 1; color: var(--accent); }
     th[data-col].desc::after { content: ' ↓'; opacity: 1; color: var(--accent); }
   </style>
@@ -429,15 +449,43 @@
 
 {%- macro start_row(s) %}
 {%- set tier = s.confidence | default('UNKNOWN') %}
-<div class="start-cell {{ tier | lower }}">
-  <div class="start-score-col">
-    {%- if s.is_past and s.game_stats %}
-    {%- set gs = s.game_stats %}
-    <details>
-      <summary class="start-summary" title="Click to see game line">{{ score_badge(s.score) }}</summary>
-      <div class="breakdown">
-        <div class="game-line">
-          <div class="game-line-main">
+<div class="start-cell {{ tier | lower }}{{ ' past' if s.is_past }}">
+  {%- if s.is_past and s.game_stats %}
+  {%- set gs = s.game_stats %}
+  <details>
+    <summary class="start-summary" title="Click to see game line">{{ score_badge(s.score) }}</summary>
+  </details>
+  {%- else %}
+  <details>
+    <summary class="start-summary" title="Click to see score breakdown">{{ score_badge(s.score) }}</summary>
+  </details>
+  {%- endif %}
+  <div class="start-meta">
+    {%- if tier == 'CONFIRMED' %}<span class="tier-confirmed" title="MLB confirmed probable starter">★</span> {%- endif %}
+    {%- if tier == 'PROJECTED' %}<span class="tier-projected" title="Projected via rotation math">~</span> {%- endif %}
+    {%- if tier == 'UNKNOWN' %}<span class="tier-unknown" title="Starter unconfirmed">?</span> {%- endif %}
+    {{ s.date[5:] }} {{ s.home_away }}
+    {%- if s.game_pk %}
+      <a class="gameday-link" href="https://www.mlb.com/gameday/{{ s.game_pk }}" target="_blank" title="MLB Gameday">{{ s.opponent }}</a>
+    {%- else %}
+      {{ s.opponent }}
+    {%- endif %}
+    {%- if not s.is_past %}
+    {%- if s.rain_pct is not none and s.rain_pct > 50 %} <span class="flag-rain" title="Rain {{ s.rain_pct|int }}%">⛈</span>{%- endif %}
+    {%- if s.familiarity_flag %} <span class="flag-repeat" title="Faced {{ s.familiarity_days }}d ago">⚠</span>{%- endif %}
+    {%- if s.temp is not none %}<span class="meta-chip">{{ s.temp|int }}°F</span>{%- endif %}
+    {%- if s.opp_woba is not none %}
+    <span class="meta-chip" title="Opponent wOBA (FanGraphs, all PA)">wOBA .{{ (s.opp_woba * 1000)|int }}</span>
+    {%- else %}
+    <span class="meta-chip" title="Opponent OPS vs this pitcher's handedness">OPS .{{ (s.opp_ops * 1000)|int }}</span>
+    {%- endif %}
+    {%- endif %}
+  </div>
+  {%- if s.is_past and s.game_stats %}
+  {%- set gs = s.game_stats %}
+  <div class="breakdown">
+    <div class="game-line">
+      <div class="game-line-main">
             {%- if gs.decision %}
             <span class="game-decision {{ 'win' if gs.decision == 'W' else 'loss' if gs.decision == 'L' else '' }}">({{ gs.decision }})</span>
             {%- endif %}
@@ -472,42 +520,16 @@
             {%- if sv.avg_fb_velo is not none %}<span>FB {{ sv.avg_fb_velo }} mph</span>{%- endif %}
           </div>
           {%- endif %}
-        </div>
-      </div>
-    </details>
-    {%- else %}
-    <details>
-      <summary class="start-summary" title="Click to see score breakdown">{{ score_badge(s.score) }}</summary>
-      {{ breakdown_panel(s.breakdown) }}
-    </details>
-    {%- endif %}
+    </div>
   </div>
-  <div class="start-meta">
-    {%- if tier == 'CONFIRMED' %}<span class="tier-confirmed" title="MLB confirmed probable starter">★</span> {%- endif %}
-    {%- if tier == 'PROJECTED' %}<span class="tier-projected" title="Projected via rotation math">~</span> {%- endif %}
-    {%- if tier == 'UNKNOWN' %}<span class="tier-unknown" title="Starter unconfirmed">?</span> {%- endif %}
-    {{ s.date[5:] }} {{ s.home_away }}
-    {%- if s.game_pk %}
-      <a class="gameday-link" href="https://www.mlb.com/gameday/{{ s.game_pk }}" target="_blank" title="MLB Gameday">{{ s.opponent }}</a>
-    {%- else %}
-      {{ s.opponent }}
-    {%- endif %}
-    {%- if not s.is_past %}
-    {%- if s.temp is not none %}&nbsp;{{ s.temp|int }}°F{%- endif %}
-    {%- if s.rain_pct is not none and s.rain_pct > 50 %}<span class="flag-rain" title="Rain {{ s.rain_pct|int }}%">⛈</span>{%- endif %}
-    {%- if s.familiarity_flag %}<span class="flag-repeat" title="Faced {{ s.familiarity_days }}d ago">⚠</span>{%- endif %}
-    {%- if s.opp_woba is not none %}
-    <span class="opp-ops" title="Opponent wOBA (FanGraphs, all PA)">wOBA .{{ (s.opp_woba * 1000)|int }}</span>
-    {%- else %}
-    <span class="opp-ops" title="Opponent OPS vs this pitcher's handedness">OPS .{{ (s.opp_ops * 1000)|int }}</span>
-    {%- endif %}
-    {%- endif %}
-  </div>
+  {%- else %}
+  {{ breakdown_panel(s.breakdown) }}
+  {%- endif %}
 </div>
 {%- endmacro %}
 
 <!-- ===== My Roster SPs ===== -->
-<h2>My Roster — Starting Pitchers This Week</h2>
+<h2>My Roster — Starting Pitchers This Week <span class="count-badge">{{ roster_pitchers|length }}</span></h2>
 <table id="roster-table">
   <thead>
     <tr>
@@ -554,7 +576,7 @@
 </table>
 
 <!-- ===== Waiver Wire SPs ===== -->
-<h2>Waiver Wire — Starting Pitchers This Week</h2>
+<h2>Waiver Wire — Starting Pitchers This Week <span class="count-badge">{{ waiver_pitchers|length }}</span></h2>
 <table id="waiver-table">
   <thead>
     <tr>
